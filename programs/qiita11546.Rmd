@@ -1,0 +1,355 @@
+---
+title: "Real Data Applications: QIITA 11546"
+author: 
+  - Huang Lin$^1$
+  - $^1$BCBB, NIEHS
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document: 
+    toc: true
+    theme: united
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
+                      message = FALSE, comment = NA,
+                      fig.width = 6.25, fig.height = 5)
+options(qwraps2_markup = "markdown",
+        qwraps2_frmt_digits = 2)
+
+library(biomformat)
+library(tidyverse)
+library(mia)
+library(ANCOMBC)
+library(magrittr)
+library(qwraps2)
+library(ggsci)
+library(ggpubr)
+library(DT)
+options(DT.options = list(
+  initComplete = JS("function(settings, json) {",
+  "$(this.api().table().header()).css({'background-color': 
+  '#000', 'color': '#fff'});","}")))
+```
+
+# 1. Data import
+
+```{r}
+# Metadata
+df_meta = read_tsv("../data/qiita_11546/sample_information_from_prep_4639.tsv")
+df_meta = df_meta %>%
+  select(sample_name, host_subject_id, time_point, time_point_month, 
+         antibiotic_use, endoscopic_activity, 
+         disease, surgery_type, surgery_subtype) %>%
+  filter(disease %in% c("cd", "uc")) %>%
+  mutate(
+    time_point_month = as.numeric(time_point_month),
+    antibiotic_use = ifelse(antibiotic_use %in% c("current", "recent"), "y", "n"),
+    surgery_type = ifelse(surgery_type == "partial_colectomy", "ileocolonic", surgery_type),
+    has_surgery = ifelse(surgery_type == "none", "n", "y")
+  )
+
+df_meta$surgery_type = factor(df_meta$surgery_type, levels = c("none", "ileocolonic", "colectomy"))
+
+# OTU table
+raw_otu = read_biom("../data/qiita_11546/128860_reference-hit.biom")
+mat_otu = as(biom_data(raw_otu), "matrix")
+col_ind = match(df_meta$sample_name, colnames(mat_otu))
+mat_otu = mat_otu[, col_ind[!is.na(col_ind)]]
+df_meta = df_meta %>%
+  filter(sample_name %in% colnames(mat_otu))
+
+# Taxonomy
+df_tax = read_tsv("../data/qiita_11546/qiita_11546_taxonomy.tsv")
+otu_id = df_tax$`Feature ID`
+df_tax = data.frame(df_tax[, - c(1, 3)], row.names = otu_id)
+df_tax = df_tax %>% 
+  separate(col = Taxon, 
+           into = c("Kingdom", "Phylum", "Class", "Order", 
+                    "Family", "Genus", "Species"),
+           sep = ";") %>%
+  rowwise() %>%
+  dplyr::mutate_all(function(x) strsplit(x, "__")[[1]][2]) %>%
+  dplyr::mutate_all(function(x) gsub("\\[|\\]", "", x)) %>%
+  mutate(Species = ifelse(!is.na(Species) & !is.na(Genus),
+                          paste(strsplit(Genus, "")[[1]][1], Species, sep = "."),
+                          NA)) %>%
+  ungroup()
+mat_tax = as.matrix(df_tax)
+rownames(mat_tax) = otu_id
+mat_tax[mat_tax == ""] = NA
+
+# Create the tse object
+assays = S4Vectors::SimpleList(counts = mat_otu)
+smd = S4Vectors::DataFrame(df_meta)
+fmd = S4Vectors::DataFrame(mat_tax)
+tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, 
+                                                         colData = smd,
+                                                         rowData = fmd)
+tse_species = tse %>%
+  agglomerateByRank(rank = "Species")
+```
+
+# 2. Data overview
+
+1. Number of samples: `r ncol(tse)`
+
+2. Number of ASVs: `r nrow(tse)`
+
+3. Number of species: `r nrow(tse_species)`
+
+```{r, results = "asis"}
+summary_template =
+  list("Number of samples" =
+       list("1" = ~ n_perc0(samples == 1, na_rm = TRUE),
+            "2" = ~ n_perc0(samples == 2, na_rm = TRUE),
+            "3" = ~ n_perc0(samples == 3, na_rm = TRUE),
+            "4" = ~ n_perc0(samples == 4, na_rm = TRUE),
+            "5" = ~ n_perc0(samples == 5, na_rm = TRUE),
+            "NA" = ~ n_perc0(is.na(samples))),
+       "Has Surgery" =
+       list("No" = ~ n_perc0(has_surgery == "n", na_rm = TRUE),
+            "Yes" = ~ n_perc0(has_surgery == "y", na_rm = TRUE),
+            "NA" = ~ n_perc0(is.na(has_surgery))),
+       "Surgery Type" =
+       list("None" = ~ n_perc0(surgery_type == "none", na_rm = TRUE),
+            "Ileocolonic Resection" = ~ n_perc0(surgery_type == "ileocolonic", na_rm = TRUE),
+            "Colectomy" = ~ n_perc0(surgery_type == "colectomy", na_rm = TRUE),
+            "NA" = ~ n_perc0(is.na(surgery_type))),
+       "Surgery Subtype" =
+       list("None" = ~ n_perc0(surgery_subtype == "none", na_rm = TRUE),
+            "Ileocolonic Resection" = ~ n_perc0(surgery_subtype == "ileocolonic", na_rm = TRUE),
+            "Colectomy" = ~ n_perc0(surgery_subtype == "colectomy", na_rm = TRUE),
+            "Colectomy with ileorectal" = ~ n_perc0(surgery_subtype == "colectomy with ileorectal", na_rm = TRUE),
+            "Colectomy with ileostomy" = ~ n_perc0(surgery_subtype == "colectomy with ileostomy", na_rm = TRUE),
+            "Colectomy with j-pouch" = ~ n_perc0(surgery_subtype == "colectomy with j-pouch", na_rm = TRUE),
+            "NA" = ~ n_perc0(is.na(surgery_subtype)))
+       )
+df_pts = df_meta %>%
+  group_by(host_subject_id) %>%
+  summarise(disease = unique(disease),
+            samples = length(time_point), 
+            has_surgery = ifelse(all(has_surgery == "n"), "n", "y"),
+            surgery_type = ifelse(all(as.character(surgery_type) == "none"), "none", 
+                                  unique(as.character(surgery_type)[as.character(surgery_type) != "none"])),
+            surgery_subtype = ifelse(all(surgery_subtype == "none"), "none", 
+                                     unique(surgery_subtype[surgery_subtype != "none"])))
+df_summ1 = df_pts %>%
+  summary_table(summary_template)
+df_summ2 = df_pts %>%
+  group_by(disease) %>%
+  summary_table(summary_template)
+cbind(df_summ2, df_summ1)
+```
+
+# 3. Run ANCOM-BC2 {.tabset}
+
+```{r, eval=FALSE}
+set.seed(123)
+output = ancombc2(data = tse, assay_name = "counts", tax_level = "Species",
+                  fix_formula = "antibiotic_use + surgery_type + time_point_month",
+                  rand_formula = "(time_point_month | host_subject_id)",
+                  p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                  group = "surgery_type", struc_zero = TRUE, neg_lb = TRUE,
+                  alpha = 0.05, n_cl = 6, verbose = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = FALSE,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
+
+saveRDS(output, "../outputs/qiita_11546/res_ancombc2.rds")
+```
+
+```{r}
+output = read_rds(file = "../outputs/qiita_11546/res_ancombc2.rds")
+res_pair = output$res_pair %>%
+  rowwise() %>%
+  mutate(species = strsplit(taxon, "_")[[1]][7]) %>%
+  filter(species != "NA") %>%
+  ungroup()
+```   
+
+## Structural zeros
+
+```{r, fig.width=8}
+df_zero = output$zero_ind %>%
+  rowwise() %>%
+  mutate(species = strsplit(taxon, "_")[[1]][7]) %>%
+  filter(species != "NA") %>%
+  mutate(idx = sum(across(matches("structural")))) %>%
+  filter(idx %in% 1:2) %>%
+  transmute(Taxon = taxon, Species = species,
+            None = ifelse(`structural_zero (surgery_type = none)` == TRUE, "Absence", "Presence"),
+            Ileocolonic = ifelse(`structural_zero (surgery_type = ileocolonic)` == TRUE, "Absence", "Presence"),
+            Colectomy = ifelse(`structural_zero (surgery_type = colectomy)` == TRUE, "Absence", "Presence")) %>%
+  arrange(None, Ileocolonic)
+
+write_csv(df_zero, "../outputs/qiita_11546/res_presence_absence.csv")
+```
+
+## Pseudo-count sensitivity analysis
+
+```{r, fig.width=8, fig.height=8}
+tab_sens = output$pseudo_sens_tab %>%
+  transmute(taxon, sens = `none - ileocolonic`) %>%
+  dplyr::right_join(res_pair %>%
+                      transmute(taxon, species, diff_abn = diff_surgery_typeileocolonic), 
+                    by = "taxon") %>%
+  mutate(group = "Ileocolonic vs. None") %>%
+  bind_rows(
+    output$pseudo_sens_tab %>%
+    transmute(taxon, sens = `none - colectomy`) %>%
+    dplyr::right_join(res_pair %>%
+                       transmute(taxon, species, diff_abn = diff_surgery_typecolectomy), 
+                      by = "taxon") %>%
+    mutate(group = "Colectomy vs. None")
+  ) %>%
+  bind_rows(
+    output$pseudo_sens_tab %>%
+      transmute(taxon, sens = `ileocolonic - colectomy`) %>%
+      dplyr::right_join(res_pair %>%
+                          transmute(taxon, species, diff_abn = diff_surgery_typecolectomy_surgery_typeileocolonic), 
+                        by = "taxon") %>%
+      mutate(group = "Colectomy vs. Ileocolonic")
+  )
+
+tab_sens$diff_abn = recode(tab_sens$diff_abn * 1, 
+                           `1` = "Significant",
+                           `0` = "Nonsignificant")
+
+tab_sens$group = factor(tab_sens$group, levels = c("Ileocolonic vs. None", 
+                                                   "Colectomy vs. None",
+                                                   "Colectomy vs. Ileocolonic"))
+
+fig_sens = tab_sens %>%
+  ggplot(aes(x = species, y = sens, color = diff_abn)) +
+  facet_grid(rows = vars(group), scales = "free") +
+  geom_point() +
+  scale_color_brewer(palette = "Dark2", name = NULL) +
+  labs(x = NULL, y = "Sensitivity Score") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
+        legend.position = "top")
+fig_sens
+ggsave("../figures/supp/qiita_11546_sens.jpeg", width = 8, height = 8, dpi = 100)
+ggsave("../figures/supp/qiita_11546_sens.pdf", width = 8, height = 8)
+```
+
+## Visualization
+
+```{r, fig.width=8}
+df_fig = res_pair %>%
+  filter(q_surgery_typeileocolonic < 0.05 | 
+             q_surgery_typecolectomy < 0.05 |
+             q_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
+  transmute(species,
+            lfc1 = ifelse(q_surgery_typeileocolonic < 0.05, 
+                          round(lfc_surgery_typeileocolonic, 2), 0),
+            lfc2 = ifelse(q_surgery_typecolectomy < 0.05, 
+                          round(lfc_surgery_typecolectomy, 2), 0),
+            lfc3 = ifelse(q_surgery_typecolectomy_surgery_typeileocolonic < 0.05, 
+                          round(lfc_surgery_typecolectomy_surgery_typeileocolonic, 2), 0)) %>%
+  pivot_longer(lfc1:lfc3, names_to = "group", values_to = "value") %>%
+  arrange(species)
+
+df_fig$group = recode(df_fig$group, 
+                      `lfc1` = "Ileocolonic - None",
+                      `lfc2` = "Colectomy - None", 
+                      `lfc3` = "Colectomy - Ileocolonic")
+df_fig$group = factor(df_fig$group, 
+                      levels = c("Ileocolonic - None", 
+                                 "Colectomy - None", 
+                                 "Colectomy - Ileocolonic"))
+
+fig_heat_pair = df_fig %>%
+  ggplot(aes(x = group, y = species, fill = value)) + 
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       na.value = "white", midpoint = 0, limit = c(-6, 6),
+                       name = NULL) +
+  geom_text(aes(group, species, label = value), color = "black", size = 4) +
+  labs(x = NULL, y = NULL, title = NULL) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+fig_heat_pair
+ggsave("../figures/main/qiita_11546.jpeg", width = 6.25, height = 5, dpi = 100)
+ggsave("../figures/main/qiita_11546.pdf", width = 6.25, height = 5)
+```
+
+```{r, fig.width=10, eval=FALSE}
+df_fig0 = res_pair %>%
+    filter(p_surgery_typeileocolonic < 0.05 | 
+             p_surgery_typecolectomy < 0.05 |
+             p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
+    transmute(species,
+              lfc1 = lfc_surgery_typeileocolonic,
+              lfc2 = lfc_surgery_typecolectomy,
+              lfc3 = lfc_surgery_typecolectomy_surgery_typeileocolonic,
+              se1 = se_surgery_typeileocolonic,
+              se2 = se_surgery_typecolectomy,
+              se3 = se_surgery_typecolectomy_surgery_typeileocolonic) 
+
+df_fig1 = df_fig0 %>%
+  transmute(species, g1 = lfc1, g2 = lfc2, g3 = lfc3) %>%
+  pivot_longer(cols = g1:g3, 
+               names_to = "group", values_to = "lfc") %>%
+  arrange(species)
+
+df_fig2 = df_fig0 %>%
+  transmute(species, g1 = se1, g2 = se2, g3 = se3) %>%
+  pivot_longer(cols = g1:g3, 
+               names_to = "group", values_to = "se") %>%
+  arrange(species)
+
+df_fig = df_fig1 %>%
+  dplyr::left_join(df_fig2, by = c("species", "group"))
+
+df_color = res_pair %>%
+    filter(p_surgery_typecolectomy < 0.05 | 
+             p_surgery_typeileocolonic < 0.05 |
+             p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
+    transmute(species,
+              color = ifelse(q_surgery_typecolectomy < 0.05 |
+                               q_surgery_typeileocolonic < 0.05 |
+                               q_surgery_typecolectomy_surgery_typeileocolonic < 0.05, 
+                             "tan3", "black")) %>%
+    arrange(species)
+
+fig_bar_pair = df_fig %>%
+  ggplot(aes(x = species, y = lfc, fill = group)) +
+  geom_bar(stat = "identity", color = "black", 
+           position = position_dodge(), width = .75) +
+  geom_errorbar(aes(ymin = lfc - se, ymax = lfc + se), 
+                width = .2, position = position_dodge(0.8)) +
+  labs(x = NULL, y = "LFC") +
+  scale_fill_jco(name = NULL, 
+                 labels = c("Ileocolonic - None", 
+                            "Colectomy - None", 
+                            "Colectomy - Ileocolonic")) +
+  theme_pubr() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(colour = df_color$color,
+                                   angle = 60, hjust = 0.5, vjust = 0.5))
+
+fig_bar_pair
+ggsave("../figures/main/qiita_11546.jpeg", width = 10, height = 5, dpi = 100)
+ggsave("../figures/main/qiita_11546.pdf", width = 10, height = 5)
+```
+
+# Session information
+
+```{r, message = FALSE, warning = FALSE, comment = NA}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+

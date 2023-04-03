@@ -1,0 +1,557 @@
+---
+title: "Real Data Applications: QIITA 10360"
+author: 
+  - Huang Lin$^1$
+  - $^1$BCBB, NIEHS
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document: 
+    toc: true
+    theme: united
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
+                      message = FALSE, comment = NA,
+                      fig.width = 6.25, fig.height = 5)
+options(qwraps2_markup = "markdown",
+        qwraps2_frmt_digits = 2)
+
+library(biomformat)
+library(openxlsx)
+library(tidyverse)
+library(mia)
+library(ANCOMBC)
+library(magrittr)
+library(qwraps2)
+library(ggsci)
+library(ggpubr)
+library(DT)
+options(DT.options = list(
+  initComplete = JS("function(settings, json) {",
+  "$(this.api().table().header()).css({'background-color': 
+  '#000', 'color': '#fff'});","}")))
+
+get_upper_tri = function(cormat){
+    cormat[lower.tri(cormat)] = NA
+    diag(cormat) = NA
+    return(cormat)
+}
+```
+
+# 1. Data import
+
+```{r}
+# Metadata
+df_meta_raw = read_tsv("../data/qiita_10360/10360_20180418-105425.txt")
+df_meta1 = df_meta_raw %>%
+  select(sample_name, host_subject_id)
+
+df_meta2 = df_meta_raw %>%
+  select(host_subject_id, averagesoilrelativehumidity,
+         electrical_conductivity, temperaturesoilhigh) %>%
+  mutate(across(averagesoilrelativehumidity:temperaturesoilhigh, as.numeric)) %>%
+  group_by(host_subject_id) %>%
+  summarise(avgsoilrh = unique(averagesoilrelativehumidity[!is.na(averagesoilrelativehumidity)]),
+            ec = unique(electrical_conductivity[!is.na(electrical_conductivity)]),
+            highsoilt = unique(temperaturesoilhigh[!is.na(temperaturesoilhigh)]))
+
+df_meta3 = read.xlsx("../data/qiita_10360/table s1.xlsx", sheet = 1, startRow = 2)
+
+df_meta = df_meta1 %>%
+  dplyr::left_join(df_meta2, by = "host_subject_id") %>%
+  dplyr::left_join(
+    df_meta3 %>%
+      transmute(host_subject_id = Site.ID, aridity = Aridity.Class),
+    by = "host_subject_id"
+  )
+df_meta$aridity = factor(df_meta$aridity, levels = c("Arid", "Margin", "Hyperarid"))
+
+# OTU table
+raw_otu = read_biom("../data/qiita_10360/131109_reference-hit.biom")
+mat_otu = as(biom_data(raw_otu), "matrix")
+col_ind = match(df_meta$sample_name, colnames(mat_otu))
+mat_otu = mat_otu[, col_ind[!is.na(col_ind)]]
+df_meta = df_meta %>%
+  filter(sample_name %in% colnames(mat_otu))
+
+# Taxonomy
+df_tax = read_tsv("../data/qiita_10360/qiita_10360_taxonomy.tsv")
+otu_id = df_tax$`Feature ID`
+df_tax = data.frame(df_tax[, - c(1, 3)], row.names = otu_id)
+df_tax = df_tax %>% 
+  separate(col = Taxon, 
+           into = c("Kingdom", "Phylum", "Class", "Order", 
+                    "Family", "Genus", "Species"),
+           sep = ";") %>%
+  rowwise() %>%
+  dplyr::mutate_all(function(x) strsplit(x, "__")[[1]][2]) %>%
+  dplyr::mutate_all(function(x) gsub("\\[|\\]", "", x)) %>%
+  mutate(Species = ifelse(!is.na(Species) & !is.na(Genus),
+                          paste(strsplit(Genus, "")[[1]][1], Species, sep = "."),
+                          NA)) %>%
+  ungroup()
+mat_tax = as.matrix(df_tax)
+rownames(mat_tax) = otu_id
+mat_tax[mat_tax == ""] = NA
+
+# Create the tse object
+assays = S4Vectors::SimpleList(counts = mat_otu)
+smd = S4Vectors::DataFrame(df_meta)
+fmd = S4Vectors::DataFrame(mat_tax)
+tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, 
+                                                         colData = smd,
+                                                         rowData = fmd)
+tse = tse[, !is.na(tse$aridity)]
+
+tse_species = tse %>%
+  agglomerateByRank(rank = "Species")
+tse_genus = tse %>%
+  agglomerateByRank(rank = "Genus")
+```
+
+# 2. Data overview
+
+1. Number of samples: `r ncol(tse)`
+
+2. Number of ASVs: `r nrow(tse)`
+
+3. Number of species: `r nrow(tse_species)`
+
+4. Number of genera: `r nrow(tse_genus)`
+
+```{r, results = "asis"}
+summary_template =
+  list("Number of samples" =
+       list("1" = ~ n_perc0(samples == 1, na_rm = TRUE),
+            "2" = ~ n_perc0(samples == 2, na_rm = TRUE),
+            "3" = ~ n_perc0(samples == 3, na_rm = TRUE),
+            "4" = ~ n_perc0(samples == 4, na_rm = TRUE),
+            "5" = ~ n_perc0(samples == 5, na_rm = TRUE),
+            "NA" = ~ n_perc0(is.na(samples))),
+       "Aridity Class" =
+       list("Arid" = ~ n_perc0(aridity == "Arid", na_rm = TRUE),
+            "Margin" = ~ n_perc0(aridity == "Margin", na_rm = TRUE),
+            "Hyperarid" = ~ n_perc0(aridity == "Hyperarid", na_rm = TRUE),
+            "NA" = ~ n_perc0(is.na(aridity))),
+       "Average Soil Relative Humidity" =
+         list("min" = ~ round(min(avgsoilrh, na.rm = T), 2),
+              "max" = ~ round(max(avgsoilrh, na.rm = T), 2),
+              "mean (sd)" = ~ qwraps2::mean_sd(avgsoilrh, na_rm = T, show_n = "never")),
+       "Electrical Conductivity" =
+         list("min" = ~ round(min(ec, na.rm = T), 2),
+              "max" = ~ round(max(ec, na.rm = T), 2),
+              "mean (sd)" = ~ qwraps2::mean_sd(ec, na_rm = T, show_n = "never")),
+       "High Soil Temperature" =
+         list("min" = ~ round(min(highsoilt, na.rm = T), 2),
+              "max" = ~ round(max(highsoilt, na.rm = T), 2),
+              "mean (sd)" = ~ qwraps2::mean_sd(highsoilt, na_rm = T, show_n = "never"))
+       )
+df_samples = df_meta %>%
+  group_by(host_subject_id) %>%
+  summarise(samples = length(sample_name), 
+            aridity = unique(aridity),
+            avgsoilrh = unique(avgsoilrh),
+            ec = unique(ec), 
+            highsoilt = unique(highsoilt))
+df_summ1 = df_samples %>%
+  summary_table(summary_template)
+df_summ2 = df_samples %>%
+  group_by(aridity) %>%
+  summary_table(summary_template)
+cbind(df_summ2, df_summ1)
+```
+
+# 3. Richness
+
+```{r}
+tse_genus = mia::estimateRichness(tse_genus, 
+                                  assay_name = "counts", 
+                                  index = "observed", 
+                                  name = "observed")
+tse_genus = mia::estimateDiversity(tse_genus, 
+                                   assay_name = "counts",
+                                   index = "shannon", 
+                                   name = "shannon")
+
+df_fig = as.data.frame(colData(tse_genus)) %>%
+  filter(!is.na(aridity))
+df_fig$aridity = factor(df_fig$aridity, levels = c("Arid", "Margin", "Hyperarid"))
+
+write_csv(df_fig, "../outputs/qiita_10360/res_alpha.csv")
+
+fig_violin = df_fig %>%
+  ggviolin(x = "aridity", y = "observed", fill = "aridity",
+           add = c("jitter", "median_iqr")) + 
+  annotate("text", x = 3, y = 450, label = "p < 0.0001", 
+           size = 5, hjust = 1, vjust = 0) +
+  labs(x = NULL, y = "Richness") +
+  scale_fill_lancet(name = NULL) +
+  theme(legend.position = "bottom")
+fig_violin 
+```
+
+# 4. Run ANCOM-BC2 {.tabset}
+
+```{r, eval=FALSE}
+set.seed(123)
+output = ancombc2(data = tse_species, assay_name = "counts", tax_level = "Genus",
+                  fix_formula = "ec + highsoilt + aridity",
+                  rand_formula = "(1 | host_subject_id)",
+                  p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                  group = "aridity", struc_zero = TRUE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 6, verbose = TRUE,
+                  global = FALSE, pairwise = FALSE, dunnet = FALSE, trend = TRUE,
+                  iter_control = list(tol = 1e-2, max_iter = 20, 
+                                      verbose = TRUE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = lme4::lmerControl(),
+                  mdfdr_control = list(fwer_ctrl_method = "holm", B = 100),
+                  trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE),
+                                                       matrix(c(-1, 0, 1, -1),
+                                                              nrow = 2, 
+                                                              byrow = TRUE)),
+                                       node = list(2, 2),
+                                       solver = "ECOS",
+                                       B = 100))
+
+saveRDS(output, "../outputs/qiita_10360/res_ancombc2.rds")
+```
+
+```{r}
+output = read_rds(file = "../outputs/qiita_10360/res_ancombc2.rds")
+
+res_trend = output$res_trend %>%
+  rowwise() %>%
+  mutate(genus = strsplit(taxon, "_")[[1]][6]) %>%
+  filter(genus != "NA") %>%
+  ungroup()
+
+res_pair = output$res_pair %>%
+  rowwise() %>%
+  mutate(genus = strsplit(taxon, "_")[[1]][6]) %>%
+  filter(genus != "NA") %>%
+  ungroup()
+
+write_csv(res_trend %>%
+            arrange(desc(diff_abn)), 
+          "../outputs/qiita_10360/res_ancombc2_trend.csv")
+
+write_csv(res_pair %>%
+            arrange(desc(diff_aridityHyperarid_aridityMargin)), 
+          "../outputs/qiita_10360/res_ancombc2_pair.csv")
+```
+
+## Structural zeros
+
+```{r, fig.width=8, fig.height=10}
+df_zero = output$zero_ind %>%
+  rowwise() %>%
+  mutate(genus = strsplit(taxon, "_")[[1]][6]) %>%
+  filter(genus != "NA",
+         `structural_zero (aridity = Hyperarid)` == TRUE) %>%
+  mutate(idx = sum(across(matches("structural")))) %>%
+  filter(idx %in% 1:2) %>%
+  transmute(Taxon = taxon, Genus = genus,
+            Arid = ifelse(`structural_zero (aridity = Arid)` == TRUE, "Absence", "Presence"),
+            Margin = ifelse(`structural_zero (aridity = Margin)` == TRUE, "Absence", "Presence"),
+            Hyperarid = ifelse(`structural_zero (aridity = Hyperarid)` == TRUE, "Absence", "Presence")) %>%
+  arrange(Arid, Margin)
+
+write_csv(df_zero, "../outputs/qiita_10360/res_presence_absence.csv")
+```
+
+## Pseudo-count sensitivity analysis
+
+```{r, fig.width=8, fig.height=8}
+tab_sens = output$pseudo_sens_tab %>%
+  transmute(taxon, sens = `Arid - Margin`) %>%
+  dplyr::right_join(res_pair %>%
+                     transmute(taxon, genus, diff_abn = diff_aridityMargin), 
+                    by = "taxon") %>%
+  mutate(group = "Margin vs. Arid") %>%
+  bind_rows(
+    output$pseudo_sens_tab %>%
+      transmute(taxon, sens = `Arid - Hyperarid`) %>%
+      dplyr::right_join(res_pair %>%
+                          transmute(taxon, genus, diff_abn = diff_aridityHyperarid), 
+                        by = "taxon") %>%
+      mutate(group = "Hyperarid vs. Arid")
+  ) %>%
+  bind_rows(
+    output$pseudo_sens_tab %>%
+      transmute(taxon, sens = `Margin - Hyperarid`) %>%
+      dplyr::right_join(res_pair %>%
+                          transmute(taxon, genus, diff_abn = diff_aridityHyperarid_aridityMargin), by = "taxon") %>%
+      mutate(group = "Hyperarid vs. Margin")
+  )
+
+tab_sens$diff_abn = recode(tab_sens$diff_abn * 1, 
+                           `1` = "Significant",
+                           `0` = "Nonsignificant")
+
+tab_sens$group = factor(tab_sens$group, levels = c("Margin vs. Arid", 
+                                                   "Hyperarid vs. Arid",
+                                                   "Hyperarid vs. Margin"))
+
+fig_sens = tab_sens %>%
+  ggplot(aes(x = genus, y = sens, color = diff_abn)) +
+  facet_grid(rows = vars(group), scales = "free") +
+  geom_point() +
+  scale_color_brewer(palette = "Dark2", name = NULL) +
+  labs(x = NULL, y = "Sensitivity Score") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
+        legend.position = "top")
+fig_sens
+ggsave("../figures/supp/qiita_10360_sens.jpeg", width = 8, height = 8, dpi = 100)
+ggsave("../figures/supp/qiita_10360_sens.pdf", width = 8, height = 8)
+```
+
+## Trend test
+
+```{r, fig.height=4}
+df_fig = res_trend %>%
+  dplyr::filter(p_val < 0.05) %>%
+  transmute(genus, lfc1 = 0, 
+            lfc2 = round(lfc_aridityMargin, 2), 
+            lfc3 = round(lfc_aridityHyperarid, 2),
+            p_val, q_val,
+            color = ifelse(q_val < 0.05, "tan3", "black")) %>%
+  pivot_longer(lfc1:lfc3, names_to = "group", values_to = "value") %>%
+  arrange(genus)
+df_fig$group = recode(df_fig$group, 
+                      `lfc1` = "Arid \n(Reference)",
+                      `lfc2` = "Margin", 
+                      `lfc3` = "Hyperarid")
+df_fig$group = factor(df_fig$group, levels = c("Arid \n(Reference)", "Margin", "Hyperarid"))
+
+fig_heat_trend = df_fig %>%
+  ggplot(aes(x = group, y = genus, fill = value)) + 
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       na.value = "white", midpoint = 0, limit = c(-6, 6),
+                       name = NULL) +
+  geom_text(aes(group, genus, label = value), color = "black", size = 4) +
+  labs(x = NULL, y = NULL, title = NULL) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.y = element_text(color = df_fig %>%
+                                     distinct(genus, color) %>%
+                                     .$color))
+fig_heat_trend
+```
+
+# 5. Run SECOM {.tabset}
+
+```{r}
+tse_arid = tse_species[, tse_species$aridity == "Arid"]
+tse_margin = tse_species[, tse_species$aridity == "Margin"]
+tse_hyperarid = tse_species[, tse_species$aridity == "Hyperarid"]
+
+set.seed(123)
+res_arid = secom_linear(data = list(tse_arid), assay_name = "counts",
+                        tax_level = "Genus", pseudo = 0, 
+                        prv_cut = 0.1, lib_cut = 1000, corr_cut = 0.5, 
+                        wins_quant = c(0.05, 0.95), method = "pearson", 
+                        soft = FALSE, thresh_len = 20, n_cv = 10, 
+                        thresh_hard = 0.3, max_p = 0.005, n_cl = 2)
+
+res_margin = secom_linear(data = list(tse_margin), assay_name = "counts",
+                          tax_level = "Genus", pseudo = 0, 
+                          prv_cut = 0.1, lib_cut = 1000, corr_cut = 0.5, 
+                          wins_quant = c(0.05, 0.95), method = "pearson", 
+                          soft = FALSE, thresh_len = 20, n_cv = 10, 
+                          thresh_hard = 0.3, max_p = 0.005, n_cl = 2)
+
+res_hyperarid = secom_linear(data = list(tse_hyperarid), assay_name = "counts",
+                             tax_level = "Genus", pseudo = 0,
+                             prv_cut = 0.1, lib_cut = 1000, corr_cut = 0.5,
+                             wins_quant = c(0.05, 0.95), method = "pearson", 
+                             soft = FALSE, thresh_len = 20, n_cv = 10, 
+                             thresh_hard = 0.3, max_p = 0.005, n_cl = 2)
+```
+
+## Data manipulation
+
+```{r}
+# Arid
+corr_arid = res_arid$corr_fl
+cooccur_arid = res_arid$mat_cooccur
+corr_arid[cooccur_arid < 10] = 0
+tax1 = colnames(corr_arid)
+
+# Margin
+corr_margin = res_margin$corr_fl
+cooccur_margin = res_margin$mat_cooccur
+corr_margin[cooccur_margin < 10] = 0
+tax2 = colnames(corr_margin)
+
+# Hyperarid
+corr_hyperarid = res_hyperarid$corr_fl
+cooccur_hyperarid = res_hyperarid$mat_cooccur
+corr_hyperarid[cooccur_hyperarid < 10] = 0
+tax3 = colnames(corr_hyperarid)
+
+commmon_tax = Reduce(intersect, list(tax1, tax2, tax3))
+idx1 = base::match(commmon_tax, tax1)
+idx2 = base::match(commmon_tax, tax2)
+idx3 = base::match(commmon_tax, tax3)
+corr_arid = corr_arid[idx1, idx1]
+corr_margin = corr_margin[idx2, idx2]
+corr_hyperarid = corr_hyperarid[idx3, idx3]
+
+common_genus = sapply(commmon_tax, function(x) strsplit(x, "_")[[1]][6])
+idx = (common_genus != "NA") & !grepl("^[[:digit:]]+", common_genus)
+ann_genus = common_genus[idx]
+corr_arid = corr_arid[idx, idx]
+corr_margin = corr_margin[idx, idx]
+corr_hyperarid = corr_hyperarid[idx, idx]
+
+colnames(corr_arid) = ann_genus; rownames(corr_arid) = ann_genus
+colnames(corr_margin) = ann_genus; rownames(corr_margin) = ann_genus
+colnames(corr_hyperarid) = ann_genus; rownames(corr_hyperarid) = ann_genus
+```
+
+## Arid
+
+```{r, fig.width=10, fig.height=8}
+df_arid = data.frame(get_upper_tri(corr_arid)) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  mutate(value = round(value, 2))
+
+df_arid$var1 = factor(df_arid$var1, levels = ann_genus)
+df_arid$var2 = factor(df_arid$var2, levels = ann_genus)
+
+heat_arid = df_arid %>%
+  ggplot(aes(var2, var1, fill = value)) +
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", na.value = "grey",
+                       midpoint = 0, limit = c(-1,1), space = "Lab", name = NULL) +
+  scale_x_discrete(drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  labs(x = NULL, y = NULL) +
+  geom_text(aes(var2, var1, label = value), color = "black", size = 3) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1, 
+                                   face = "italic"),
+        axis.text.y = element_text(size = 10, face = "italic"),
+        strip.text.x = element_text(size = 14),
+        strip.text.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        panel.grid.major = element_blank(),
+        axis.ticks = element_blank()) +
+  coord_fixed()
+
+heat_arid
+```
+
+## Margin
+
+```{r, fig.width=10, fig.height=8}
+df_margin = data.frame(get_upper_tri(corr_margin)) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  mutate(value = round(value, 2))
+
+df_margin$var1 = factor(df_margin$var1, levels = ann_genus)
+df_margin$var2 = factor(df_margin$var2, levels = ann_genus)
+
+heat_margin = df_margin %>%
+  ggplot(aes(var2, var1, fill = value)) +
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", na.value = "grey",
+                       midpoint = 0, limit = c(-1,1), space = "Lab", name = NULL) +
+  scale_x_discrete(drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  labs(x = NULL, y = NULL) +
+  geom_text(aes(var2, var1, label = value), color = "black", size = 3) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1, 
+                                   face = "italic"),
+        axis.text.y = element_text(size = 10, face = "italic"),
+        strip.text.x = element_text(size = 14),
+        strip.text.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        panel.grid.major = element_blank(),
+        axis.ticks = element_blank()) +
+  coord_fixed()
+
+heat_margin
+```
+
+## Hyperarid
+
+```{r, fig.width=10, fig.height=8}
+df_hyperarid = data.frame(get_upper_tri(corr_hyperarid)) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(cols = -var1, names_to = "var2", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  mutate(value = round(value, 2))
+
+df_hyperarid$var1 = factor(df_hyperarid$var1, levels = ann_genus)
+df_hyperarid$var2 = factor(df_hyperarid$var2, levels = ann_genus)
+
+heat_hyperarid = df_hyperarid %>%
+  ggplot(aes(var2, var1, fill = value)) +
+  geom_tile(color = "black") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", na.value = "grey",
+                       midpoint = 0, limit = c(-1,1), space = "Lab", name = NULL) +
+  scale_x_discrete(drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  labs(x = NULL, y = NULL) +
+  geom_text(aes(var2, var1, label = value), color = "black", size = 3) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1, 
+                                   face = "italic"),
+        axis.text.y = element_text(size = 10, face = "italic"),
+        strip.text.x = element_text(size = 14),
+        strip.text.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        panel.grid.major = element_blank(),
+        axis.ticks = element_blank()) +
+  coord_fixed()
+
+heat_hyperarid
+```
+
+# 6. Outputs
+
+```{r}
+fig_main = ggarrange(fig_violin, fig_heat_trend, labels = c("a", "b"), legend = "bottom")
+
+ggsave("../figures/main/qiita_10360.jpeg", width = 10, height = 6, dpi = 100)
+ggsave("../figures/main/qiita_10360.pdf", width = 10, height = 6)
+
+
+leg = get_legend(heat_arid)
+heat_arid = heat_arid + theme(legend.position = "none")
+heat_margin = heat_margin + theme(legend.position = "none")
+heat_hyperarid = heat_hyperarid + theme(legend.position = "none")
+fig_supp = ggarrange(heat_arid, heat_margin, heat_hyperarid, leg, 
+               ncol = 2, nrow = 2, 
+               labels = c("a", "b", "c", ""))
+ggsave("../figures/supp/qiita_10360_corr.jpeg", width = 16, height = 12, dpi = 100)
+ggsave("../figures/supp/qiita_10360_corr.pdf", width = 16, height = 12)
+```
+
+# Session information
+
+```{r, message = FALSE, warning = FALSE, comment = NA}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+

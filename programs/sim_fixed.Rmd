@@ -1,0 +1,2372 @@
+---
+title: "Simulations for fixed effects models"
+author: 
+  - Huang Lin$^1$
+  - $^1$BCBB, NIEHS
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document: 
+    toc: true
+    theme: united
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
+                      message = FALSE, comment = NA,
+                      fig.width = 6.25, fig.height = 5)
+library(openxlsx)
+library(tidyverse)
+library(mia)
+library(ggpubr)
+library(caret)
+library(doRNG)
+library(doParallel)
+library(magrittr)
+library(qwraps2)
+library(ANCOMBC)
+library(MicrobiomeStat)
+library(LOCOM)
+```
+
+```{r helper}
+logsumexp = function (x) {
+  y = max(x)
+  y + log(sum(exp(x - y)))
+}
+
+softmax = function (x) {
+  exp(x - logsumexp(x))
+}
+
+options(qwraps2_markup = "markdown")
+summary_template =
+  list("Power" =
+         list("power_mean" = ~ round(mean(X1, na.rm = TRUE), 2),
+              "power_sd" = ~ round(sd(X1, na.rm = TRUE), 2)),
+       "FDR" = 
+         list("fdr_mean" = ~ round(mean(X2, na.rm = TRUE), 2),
+              "fdr_sd" = ~ round(sd(X2, na.rm = TRUE), 2))
+  )
+
+wb = createWorkbook()
+```
+
+# Set-up {.tabset}
+
+## The batch effect in sampling fractions
+
+```{r, fig.width=8}
+n = 150
+diff_prop = 0.1
+lfc_cont = -2
+lfc_bin = 1
+
+set.seed(123)
+
+# Continuous covariate
+smd1 = data.frame(sample = paste0("S", seq_len(n)),
+                  cont_cov = rnorm(n),
+                  bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
+  dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+
+fig1 = smd1 %>%
+  ggscatter(x = "cont_cov", y = "samp_frac", add = "reg.line",  
+            add.params = list(color = "blue", fill = "lightgray"), 
+            conf.int = TRUE, cor.coef = TRUE, 
+            cor.coeff.args = list(method = "pearson", 
+                                  label.x = -2, label.sep = "\n"),
+            xlab = "Continuous Exposure", ylab = "Sampling Fraction")
+
+# Binary covariate
+smd2 = data.frame(sample = paste0("S", seq_len(n)),
+                  samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                     runif(n/2, min = 1e-3, max = 1e-2))),
+                  cont_cov = rnorm(n),
+                  bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+
+fig2 = smd2 %>%
+  ggboxplot(x = "bin_cov", y = "samp_frac", color = "bin_cov",
+            add = "jitter", palette = "aaas",
+            xlab = "Binary Exposure", ylab = "Sampling Fraction") +
+  stat_compare_means() +
+  guides(color = guide_legend(""))
+
+# Categorical covariate
+my_comparisons = list(c("1", "2"), c("2", "3"))
+smd3 = data.frame(sample = paste0("S", seq_len(n)),
+                  samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                    runif(n/3, min = 1e-3, max = 1e-2),
+                                    runif(n/3, min = 1e-2, max = 1e-1))),
+                  cont_cov = rnorm(n),
+                  cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+
+fig3 = smd3 %>%
+  ggboxplot(x = "cat_cov", y = "samp_frac", color = "cat_cov",
+            add = "jitter", palette = "aaas",
+            xlab = "Categorical Exposure", ylab = "Sampling Fraction") +
+  stat_compare_means(comparisons = my_comparisons) +
+  guides(color = guide_legend(""))
+
+fig = ggarrange(fig1, fig2, fig3, labels = c("a", "b", "c"), ncol = 3)
+fig
+ggsave("../figures/supp/sim_fixed_batch_effects.jpeg", width = 8, height = 5, dpi = 100)
+ggsave("../figures/supp/sim_fixed_batch_effects.pdf", width = 8, height = 5)
+```
+
+## Sensitivity analysis for the pseudo-count addition
+
+```{r, fig.width=10}
+data(QMP, package = "ANCOMBC")
+n = 150
+d = ncol(QMP)
+diff_prop = 0.1
+
+# Generate the true abundances
+set.seed(123)
+abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                    n = n, lib_mean = 1e8, disp = 0.5)
+log_abn_data = log(abn_data + 1e-5)
+rownames(log_abn_data) = paste0("T", seq_len(d))
+colnames(log_abn_data) = paste0("S", seq_len(n))
+
+# Generate the sample and feature meta data
+# Sampling fractions are set to differ by the variable of interest
+smd = data.frame(sample = paste0("S", seq_len(n)),
+                 cont_cov = rnorm(n),
+                 cat_cov = as.factor(rep(seq_len(3), each = n/3))) %>%
+  dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+
+lfc_value = c(-2, -1, 1, 2)
+lfc_cont = sample(c(0, lfc_value), size = d, replace = TRUE,
+                  prob = c(1 - diff_prop, rep(diff_prop/length(lfc_value), length(lfc_value))))
+lfc_cat = sample(c(0, 1), size = d, replace = TRUE,
+                 prob = c(1 - diff_prop, diff_prop))
+fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                 seq_eff = log(runif(d, min = 0.1, max = 1)),
+                 lfc_cont = lfc_cont,
+                 lfc_cat2_vs_1 = lfc_cat,
+                 lfc_cat3_vs_1 = lfc_cat)
+
+# Add effect sizes of covariates to the true abundances
+dmy = dummyVars(" ~ cat_cov", data = smd)
+smd_dmy = data.frame(predict(dmy, newdata = smd))
+
+log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd$cont_cov)
+log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy$cat_cov.2)
+log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy$cat_cov.3)
+
+# Add sample- and taxon-specific biases
+log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+log_otu_data = log_otu_data + fmd$seq_eff
+otu_data = round(exp(log_otu_data))
+
+# Create the tse object
+assays = S4Vectors::SimpleList(counts = otu_data)
+smd = S4Vectors::DataFrame(smd)
+tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+
+# Run ANCOM-BC2
+set.seed(123)
+output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "cont_cov + cat_cov", rand_formula = NULL,
+                  p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                  prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                  group = "cat_cov", struc_zero = FALSE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 1, verbose = FALSE,
+                  global = FALSE, pairwise = FALSE, 
+                  dunnet = FALSE, trend = FALSE,
+                  iter_control = list(tol = 1e-5, max_iter = 20, 
+                                      verbose = FALSE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = NULL, mdfdr_control = NULL, 
+                  trend_control = NULL)
+
+res_prim = output$res
+tab_sens = output$pseudo_sens_tab
+sens_cut = quantile(tab_sens$cont_cov, 0.6)
+res_merge = res_prim %>%
+  dplyr::transmute(taxon, lfc_est = lfc_cont_cov * diff_cont_cov) %>%
+  dplyr::left_join(tab_sens %>%
+                     dplyr::transmute(taxon, sens = cont_cov),
+                   by = "taxon") %>%
+  dplyr::left_join(fmd %>%
+                     dplyr::transmute(taxon, lfc_true = lfc_cont),
+                   by = "taxon") %>%
+  dplyr::transmute(taxon, 
+                   sens = sens,
+                   lfc_est = case_when(lfc_est > 0 ~ 1,
+                                       lfc_est < 0 ~ -1,
+                                       TRUE ~ 0),
+                   lfc_true = case_when(lfc_true > 0 ~ 1,
+                                        lfc_true < 0 ~ -1,
+                                        TRUE ~ 0),
+                   group = case_when(
+                     lfc_est != 0 & lfc_true != 0 ~ "TP",
+                     lfc_est != 0 & lfc_true == 0 ~ "FP",
+                     lfc_est == 0 & lfc_true != 0 ~ "FN",
+                     TRUE ~ "TN"
+                   ))
+
+
+fig = res_merge %>%
+  ggplot(aes(x = taxon, y = sens, color = group)) +
+  geom_point() +
+  scale_color_brewer(palette = "Dark2", name = NULL) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  labs(x = NULL, y = "Sensitivity Score") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
+        legend.position = "top")
+fig
+ggsave("../figures/supp/sim_fixed_sens.jpeg", width = 10, height = 5, dpi = 100)
+ggsave("../figures/supp/sim_fixed_sens.pdf", width = 10, height = 5)
+```
+
+# Case 1: Test for a continuous exposure {.tabset}
+
+1 continuous covariate + 1 binary covariate
+
+```{r}
+# Simulation settings
+set.seed(12345)
+data(QMP, package = "ANCOMBC")
+n = c(10, 20, 30, 50, 100)
+d = ncol(QMP)
+diff_prop = c(0.1, 0.2, 0.5, 0.9)
+iter_num = 100
+seed = seq_len(iter_num)
+df_sim_params = data.frame(expand.grid(n, diff_prop, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, seed = Var3) %>%
+  arrange(n, diff_prop, seed)
+list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
+
+lfc_value = c(-2, -1, 1, 2)
+lfc_cont_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cont_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                              prob = c(1 - diff_prop[i], 
+                                       rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cont_list) = diff_prop
+
+lfc_bin_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_bin_list[[i]] = sample(c(0, 1), size = d, replace = TRUE,
+                             prob = c(1 - diff_prop[i], diff_prop[i]))
+}
+names(lfc_bin_list) = diff_prop
+```
+
+## ANCOM-BC2
+
+```{r, eval=FALSE}
+cl = makeCluster(16)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
+      dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+    
+    d = nrow(abn_data) 
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC2
+    set.seed(123)
+    output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                      fix_formula = "cont_cov + bin_cov", rand_formula = NULL,
+                      p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                      prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                      group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE,
+                      alpha = 0.05, n_cl = 1, verbose = FALSE,
+                      global = FALSE, pairwise = FALSE, 
+                      dunnet = FALSE, trend = FALSE,
+                      iter_control = list(tol = 1e-5, max_iter = 20, 
+                                          verbose = FALSE),
+                      em_control = list(tol = 1e-5, max_iter = 100),
+                      lme_control = NULL, mdfdr_control = NULL, 
+                      trend_control = NULL)
+    
+    res_prim = output$res
+    tab_sens = output$pseudo_sens_tab
+    sens_cut = 1
+    res_merge = res_prim %>%
+      dplyr::transmute(taxon, lfc_est = lfc_cont_cov * diff_cont_cov) %>%
+      dplyr::left_join(tab_sens %>%
+                         dplyr::transmute(taxon, sens = cont_cov),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, lfc_true = lfc_cont),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est = lfc_est * (sens < sens_cut),
+                       lfc_est = case_when(lfc_est > 0 ~ 1,
+                                           lfc_est < 0 ~ -1,
+                                           TRUE ~ 0),
+                       lfc_true = case_when(lfc_true > 0 ~ 1,
+                                            lfc_true < 0 ~ -1,
+                                            TRUE ~ 0))
+    lfc_est = res_merge$lfc_est
+    lfc_true = res_merge$lfc_true
+    tp = sum(lfc_true != 0 & lfc_est != 0)
+    fp = sum(lfc_true == 0 & lfc_est != 0)
+    fn = sum(lfc_true != 0 & lfc_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_cont_ancombc2.csv")
+```
+
+## ANCOM-BC
+
+```{r, eval=FALSE}
+cl = makeCluster(4)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
+      dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+    
+    d = nrow(abn_data) 
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC
+    set.seed(123)
+    output = ancombc(data = tse, assay_name = "counts", 
+                     tax_level = NULL, phyloseq = NULL, 
+                     formula = "cont_cov + bin_cov", 
+                     p_adj_method = "holm", prv_cut = 0.10, lib_cut = 1000, 
+                     group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
+                     max_iter = 100, conserve = TRUE, alpha = 0.05, global = FALSE,
+                     n_cl = 1, verbose = FALSE)
+    
+    res_prim = output$res
+    res_merge = res_prim$lfc %>%
+      dplyr::transmute(taxon, lfc_est = cont_cov) %>%
+      dplyr::left_join(res_prim$diff_abn %>%
+                         dplyr::transmute(taxon, diff = cont_cov),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, lfc_true = lfc_cont),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est = lfc_est * diff,
+                       lfc_est = case_when(lfc_est > 0 ~ 1,
+                                           lfc_est < 0 ~ -1,
+                                           TRUE ~ 0),
+                       lfc_true = case_when(lfc_true > 0 ~ 1,
+                                            lfc_true < 0 ~ -1,
+                                            TRUE ~ 0))
+    lfc_est = res_merge$lfc_est
+    lfc_true = res_merge$lfc_true
+    tp = sum(lfc_true != 0 & lfc_est != 0)
+    fp = sum(lfc_true == 0 & lfc_est != 0)
+    fn = sum(lfc_true != 0 & lfc_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_cont_ancombc.csv")
+```
+
+## LinDA
+
+```{r, eval=FALSE}
+cl = makeCluster(2)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "MicrobiomeStat", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
+      dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+    
+    d = nrow(abn_data) 
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    # Run LinDA
+    output = linda(feature.dat = otu_data, meta.dat = smd,
+                   formula = "~ cont_cov + bin_cov",
+                   alpha = 0.05, 
+                   prev.filter = 0.10, 
+                   mean.abund.filter = 0,
+                   adaptive = TRUE,
+                   max.abund.filter = 0,
+                   p.adj.method = "holm",
+                   n.cores = 1, 
+                   verbose = FALSE)
+    
+    res = output$output
+    res_merge = res$cont_cov %>%
+      rownames_to_column("taxon") %>%
+      dplyr::transmute(taxon, lfc_est = log2FoldChange * reject) %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, lfc_true = lfc_cont),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est = case_when(lfc_est > 0 ~ 1,
+                                           lfc_est < 0 ~ -1,
+                                           TRUE ~ 0),
+                       lfc_true = case_when(lfc_true > 0 ~ 1,
+                                            lfc_true < 0 ~ -1,
+                                            TRUE ~ 0))
+    lfc_est = res_merge$lfc_est
+    lfc_true = res_merge$lfc_true
+    tp = sum(lfc_true != 0 & lfc_est != 0)
+    fp = sum(lfc_true == 0 & lfc_est != 0)
+    fn = sum(lfc_true != 0 & lfc_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_cont_linda.csv")
+```
+
+## LOCOM
+
+```{r, eval=FALSE}
+cl = makeCluster(4)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "LOCOM", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
+      dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+    
+    d = nrow(abn_data) 
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    otu_table = data.matrix(t(otu_data))
+    Y = smd$cont_cov
+    C = data.matrix(model.matrix(Y ~ smd$bin_cov - 1))[, -1]
+    
+    # Run LOCOM
+    suppressWarnings(output <- try(locom(otu.table = otu_table, 
+                                         Y = Y, 
+                                         C = C, 
+                                         fdr.nominal = 0.05, 
+                                         prev.cut = 0.1,
+                                         seed = 123, 
+                                         adjustment = "holm", 
+                                         n.cores = 1),
+                                   silent = TRUE))
+    if (inherits(output, "try-error")) {
+      power = NA; fdr = NA
+    }else{
+      res = data.frame(taxon = colnames(output$p.otu),
+                       lfc_est = as.numeric(signif(output$effect.size, 3)),
+                       q_value = as.numeric(signif(output$q.otu, 3)),
+                       row.names = NULL)
+      res_merge = res %>%
+        dplyr::transmute(taxon, lfc_est = lfc_est * (q_value < 0.05)) %>%
+        dplyr::left_join(fmd %>%
+                           dplyr::transmute(taxon, lfc_true = lfc_cont),
+                         by = "taxon") %>%
+        dplyr::transmute(taxon, 
+                         lfc_est = case_when(lfc_est > 0 ~ 1,
+                                             lfc_est < 0 ~ -1,
+                                             TRUE ~ 0),
+                         lfc_true = case_when(lfc_true > 0 ~ 1,
+                                              lfc_true < 0 ~ -1,
+                                              TRUE ~ 0))
+      lfc_est = res_merge$lfc_est
+      lfc_true = res_merge$lfc_true
+      tp = sum(lfc_true != 0 & lfc_est != 0)
+      fp = sum(lfc_true == 0 & lfc_est != 0)
+      fn = sum(lfc_true != 0 & lfc_est == 0)
+      power = tp/(tp + fn)
+      fdr = fp/(tp + fp)
+    }
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_cont_locom.csv")
+```
+
+## Visualization
+
+```{r, fig.width=10, fig.height=8}
+df_ancombc2 = read_csv("../outputs/sim_fixed/cont/sim_cont_ancombc2.csv")
+df_ancombc = read_csv("../outputs/sim_fixed/cont/sim_cont_ancombc.csv")
+df_linda = read_csv("../outputs/sim_fixed/cont/sim_cont_linda.csv")
+df_locom = read_csv("../outputs/sim_fixed/cont/sim_cont_locom.csv")
+
+n = c(10, 20, 30, 50, 100)
+simpattern = distinct(df_sim_params, n, diff_prop) %>%
+  unite("setting", n:diff_prop, sep = ", ")
+
+df_ancombc2 = df_ancombc2 %>%
+  mutate(method = "ANCOM-BC2",
+         setting = rep(simpattern$setting, each = iter_num))
+df_ancombc = df_ancombc %>%
+  mutate(method = "ANCOM-BC",
+         setting = rep(simpattern$setting, each = iter_num))
+df_linda = df_linda %>%
+  mutate(method = "LinDA",
+         setting = rep(simpattern$setting, each = iter_num))
+df_locom = df_locom %>%
+  mutate(method = "LOCOM",
+         setting = rep(simpattern$setting, each = iter_num))
+
+df_fig = df_ancombc2 %>%
+  bind_rows(df_ancombc) %>%
+  bind_rows(df_linda) %>%
+  bind_rows(df_locom) %>%
+  separate(setting, c("n", "diff_prop"), ", ")
+df_fig$method = factor(df_fig$method, 
+                       levels = c("ANCOM-BC2", "ANCOM-BC", "LinDA", "LOCOM"))
+
+fig_power_cont = df_fig %>%
+  ggline(x = "n", y = "X1", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+  guides(color = guide_legend(title = NULL))
+
+fig_fdr_cont = df_fig %>%
+  ggline(x = "n", y = "X2", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "FDR", facet.by = "diff_prop", nrow = 1) +
+  guides(color = guide_legend(title = NULL)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed")
+
+fig_cont = ggarrange(fig_fdr_cont, fig_power_cont, 
+                     ncol = 1, common.legend = TRUE)
+fig_cont
+
+# Extract the hex color codes used in "npg" palette
+hex_code = unique(ggplot_build(fig_power_cont)$data[[1]]$colour)
+
+# Simulation summary
+df_tab = df_fig %>%
+  unite("setting", n:diff_prop, sep = ", ")
+df_tab$setting = factor(df_tab$setting, 
+                        levels = c(paste0("10, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("20, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("50, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("100, ", c(0.1, 0.2, 0.5, 0.9))))
+
+tab = df_tab %>% 
+  group_by(method, setting) %>% 
+  summary_table(summary_template)
+
+addWorksheet(wb, "cont")
+writeData(wb, "cont", tab)
+```
+
+# Case 2: Test for a binary exposure {.tabset}
+
+1 continuous covariate + 1 binary covariate
+
+```{r}
+# Simulation settings
+set.seed(12345)
+data(QMP, package = "ANCOMBC")
+n = c(20, 40, 60, 100, 200)
+d = ncol(QMP)
+diff_prop = c(0.1, 0.2, 0.5, 0.9)
+iter_num = 100
+seed = seq_len(iter_num)
+df_sim_params = data.frame(expand.grid(n, diff_prop, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, seed = Var3) %>%
+  arrange(n, diff_prop, seed)
+list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
+
+lfc_value = c(-2, -1, 1, 2)
+lfc_bin_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_bin_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                             prob = c(1 - diff_prop[i], 
+                                      rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_bin_list) = diff_prop
+
+lfc_cont_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cont_list[[i]] = sample(c(0, 1), size = d, replace = TRUE,
+                              prob = c(1 - diff_prop[i], diff_prop[i]))
+}
+names(lfc_cont_list) = diff_prop
+```
+
+## ANCOM-BC2
+
+```{r, eval=FALSE}
+cl = makeCluster(16)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                       runif(n/2, min = 1e-3, max = 1e-2))),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+    
+    d = nrow(abn_data) 
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC2
+    set.seed(123)
+    output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                      fix_formula = "cont_cov + bin_cov", rand_formula = NULL,
+                      p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                      prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                      group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE,
+                      alpha = 0.05, n_cl = 1, verbose = FALSE,
+                      global = FALSE, pairwise = FALSE, 
+                      dunnet = FALSE, trend = FALSE,
+                      iter_control = list(tol = 1e-5, max_iter = 20, 
+                                          verbose = FALSE),
+                      em_control = list(tol = 1e-5, max_iter = 100),
+                      lme_control = NULL, mdfdr_control = NULL, 
+                      trend_control = NULL)
+    
+    res_prim = output$res
+    tab_sens = output$pseudo_sens_tab
+    sens_cut = 1
+    res_merge = res_prim %>%
+      dplyr::transmute(taxon, lfc_est = lfc_bin_cov2 * diff_bin_cov2) %>%
+      dplyr::left_join(tab_sens %>%
+                         dplyr::transmute(taxon, sens = bin_cov2),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, lfc_true = lfc_bin),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est = lfc_est * (sens < sens_cut),
+                       lfc_est = case_when(lfc_est > 0 ~ 1,
+                                           lfc_est < 0 ~ -1,
+                                           TRUE ~ 0),
+                       lfc_true = case_when(lfc_true > 0 ~ 1,
+                                            lfc_true < 0 ~ -1,
+                                            TRUE ~ 0))
+    lfc_est = res_merge$lfc_est
+    lfc_true = res_merge$lfc_true
+    tp = sum(lfc_true != 0 & lfc_est != 0)
+    fp = sum(lfc_true == 0 & lfc_est != 0)
+    fn = sum(lfc_true != 0 & lfc_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_bin_ancombc2.csv")
+```
+
+## ANCOM-BC
+
+```{r, eval=FALSE}
+cl = makeCluster(4)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                       runif(n/2, min = 1e-3, max = 1e-2))),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+    
+    d = nrow(abn_data) 
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC2
+    set.seed(123)
+    output = ancombc(data = tse, assay_name = "counts", 
+                     tax_level = NULL, phyloseq = NULL, 
+                     formula = "cont_cov + bin_cov", 
+                     p_adj_method = "holm", prv_cut = 0.10, lib_cut = 1000, 
+                     group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
+                     max_iter = 100, conserve = TRUE, alpha = 0.05, global = FALSE,
+                     n_cl = 1, verbose = FALSE)
+    
+    res_prim = output$res
+    res_merge = res_prim$lfc %>%
+      dplyr::transmute(taxon, lfc_est = bin_cov2) %>%
+      dplyr::left_join(res_prim$diff_abn %>%
+                         dplyr::transmute(taxon, diff = bin_cov2),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, lfc_true = lfc_bin),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est = lfc_est * diff,
+                       lfc_est = case_when(lfc_est > 0 ~ 1,
+                                           lfc_est < 0 ~ -1,
+                                           TRUE ~ 0),
+                       lfc_true = case_when(lfc_true > 0 ~ 1,
+                                            lfc_true < 0 ~ -1,
+                                            TRUE ~ 0))
+    lfc_est = res_merge$lfc_est
+    lfc_true = res_merge$lfc_true
+    tp = sum(lfc_true != 0 & lfc_est != 0)
+    fp = sum(lfc_true == 0 & lfc_est != 0)
+    fn = sum(lfc_true != 0 & lfc_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_bin_ancombc.csv")
+```
+
+## LinDA
+
+```{r, eval=FALSE}
+cl = makeCluster(2)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "MicrobiomeStat", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                       runif(n/2, min = 1e-3, max = 1e-2))),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+    
+    d = nrow(abn_data) 
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    # Run LinDA
+    output = linda(feature.dat = otu_data, meta.dat = smd,
+                   formula = "~ cont_cov + bin_cov",
+                   alpha = 0.05, 
+                   prev.filter = 0.10, 
+                   mean.abund.filter = 0,
+                   adaptive = TRUE,
+                   max.abund.filter = 0,
+                   p.adj.method = "holm",
+                   n.cores = 1, 
+                   verbose = FALSE)
+    
+    res = output$output
+    res_merge = res$bin_cov2 %>%
+      rownames_to_column("taxon") %>%
+      dplyr::transmute(taxon, lfc_est = log2FoldChange * reject) %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, lfc_true = lfc_bin),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est = case_when(lfc_est > 0 ~ 1,
+                                           lfc_est < 0 ~ -1,
+                                           TRUE ~ 0),
+                       lfc_true = case_when(lfc_true > 0 ~ 1,
+                                            lfc_true < 0 ~ -1,
+                                            TRUE ~ 0))
+    lfc_est = res_merge$lfc_est
+    lfc_true = res_merge$lfc_true
+    tp = sum(lfc_true != 0 & lfc_est != 0)
+    fp = sum(lfc_true == 0 & lfc_est != 0)
+    fn = sum(lfc_true != 0 & lfc_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_bin_linda.csv")
+```
+
+## LOCOM
+
+```{r, eval=FALSE}
+cl = makeCluster(4)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "LOCOM", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                       runif(n/2, min = 1e-3, max = 1e-2))),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+    
+    d = nrow(abn_data) 
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    otu_table = data.matrix(t(otu_data))
+    Y = smd$bin_cov
+    C = data.matrix(model.matrix(Y ~ smd$cont_cov - 1))
+    
+    # Run LOCOM
+    suppressWarnings(output <- try(locom(otu.table = otu_table, 
+                                         Y = Y, 
+                                         C = C, 
+                                         fdr.nominal = 0.05, 
+                                         prev.cut = 0.1,
+                                         seed = 123, 
+                                         adjustment = "holm", 
+                                         n.cores = 1),
+                                   silent = TRUE))
+    if (inherits(output, "try-error")) {
+      power = NA; fdr = NA
+    }else{
+      res = data.frame(taxon = colnames(output$p.otu),
+                       lfc_est = as.numeric(signif(output$effect.size, 3)),
+                       q_value = as.numeric(signif(output$q.otu, 3)),
+                       row.names = NULL)
+      res_merge = res %>%
+        dplyr::transmute(taxon, lfc_est = lfc_est * (q_value < 0.05)) %>%
+        dplyr::left_join(fmd %>%
+                           dplyr::transmute(taxon, lfc_true = lfc_bin),
+                         by = "taxon") %>%
+        dplyr::transmute(taxon, 
+                         lfc_est = case_when(lfc_est > 0 ~ 1,
+                                             lfc_est < 0 ~ -1,
+                                             TRUE ~ 0),
+                         lfc_true = case_when(lfc_true > 0 ~ 1,
+                                              lfc_true < 0 ~ -1,
+                                              TRUE ~ 0))
+      lfc_est = res_merge$lfc_est
+      lfc_true = res_merge$lfc_true
+      tp = sum(lfc_true != 0 & lfc_est != 0)
+      fp = sum(lfc_true == 0 & lfc_est != 0)
+      fn = sum(lfc_true != 0 & lfc_est == 0)
+      power = tp/(tp + fn)
+      fdr = fp/(tp + fp)
+    }
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_bin_locom.csv")
+```
+
+## Visualization
+
+```{r, fig.width=10, fig.height=8}
+df_ancombc2 = read_csv("../outputs/sim_fixed/bin/sim_bin_ancombc2.csv")
+df_ancombc = read_csv("../outputs/sim_fixed/bin/sim_bin_ancombc.csv")
+df_linda = read_csv("../outputs/sim_fixed/bin/sim_bin_linda.csv")
+df_locom = read_csv("../outputs/sim_fixed/bin/sim_bin_locom.csv")
+
+simpattern = distinct(df_sim_params, n, diff_prop) %>%
+  unite("setting", n:diff_prop, sep = ", ")
+
+df_ancombc2 = df_ancombc2 %>%
+  mutate(method = "ANCOM-BC2",
+         setting = rep(simpattern$setting, each = iter_num))
+df_ancombc = df_ancombc %>%
+  mutate(method = "ANCOM-BC",
+         setting = rep(simpattern$setting, each = iter_num))
+df_linda = df_linda %>%
+  mutate(method = "LinDA",
+         setting = rep(simpattern$setting, each = iter_num))
+df_locom = df_locom %>%
+  mutate(method = "LOCOM",
+         setting = rep(simpattern$setting, each = iter_num))
+
+df_fig = df_ancombc2 %>%
+  bind_rows(df_ancombc) %>%
+  bind_rows(df_linda) %>%
+  bind_rows(df_locom) %>%
+  separate(setting, c("n", "diff_prop"), ", ")
+df_fig$method = factor(df_fig$method, 
+                       levels = c("ANCOM-BC2", "ANCOM-BC", "LinDA", "LOCOM"))
+
+fig_power_bin = df_fig %>%
+  ggline(x = "n", y = "X1", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL))
+
+fig_fdr_bin = df_fig %>%
+  ggline(x = "n", y = "X2", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "FDR", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed")
+
+fig_bin = ggarrange(fig_fdr_bin, fig_power_bin, 
+                    ncol = 1, common.legend = TRUE)
+fig_bin
+
+# Simulation summary
+df_tab = df_fig %>%
+  unite("setting", n:diff_prop, sep = ", ")
+df_tab$setting = factor(df_tab$setting, 
+                        levels = c(paste0("10, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("20, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("50, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("100, ", c(0.1, 0.2, 0.5, 0.9))))
+
+tab = df_tab %>% 
+  group_by(method, setting) %>% 
+  summary_table(summary_template)
+
+addWorksheet(wb, "bin")
+writeData(wb, "bin", tab)
+```
+
+# Case 3: Dunnet's type of test {.tabset}
+
+1 continuous covariate + 1 categorical covariate (with three levels)
+
+```{r}
+# Simulation settings
+set.seed(12345)
+data(QMP, package = "ANCOMBC")
+n = c(30, 60, 90, 150, 300)
+d = ncol(QMP)
+diff_prop = c(0.1, 0.2, 0.5, 0.9)
+iter_num = 100
+seed = seq_len(iter_num)
+df_sim_params = data.frame(expand.grid(n, diff_prop, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, seed = Var3) %>%
+  arrange(n, diff_prop, seed)
+list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
+
+lfc_value = c(-2, -1, 1, 2)
+lfc_cat2_vs_1_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cat2_vs_1_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                                   prob = c(1 - diff_prop[i],
+                                            rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cat2_vs_1_list) = diff_prop
+
+lfc_cat3_vs_1_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cat3_vs_1_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                                   prob = c(1 - diff_prop[i],
+                                            rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cat3_vs_1_list) = diff_prop
+
+lfc_cont_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cont_list[[i]] = sample(c(0, 1), size = d, replace = TRUE,
+                              prob = c(1 - diff_prop[i], diff_prop[i]))
+}
+names(lfc_cont_list) = diff_prop
+```
+
+## ANCOM-BC2
+
+```{r, eval=FALSE}
+cl = makeCluster(16)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by batches
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                       runif(n/3, min = 1e-3, max = 1e-2),
+                                       runif(n/3, min = 1e-2, max = 1e-1))),
+                     cont_cov = rnorm(n),
+                     cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+    
+    d = nrow(abn_data)   
+    lfc_cat2_vs_1 = lfc_cat2_vs_1_list[[as.character(diff_prop)]]
+    lfc_cat3_vs_1 = lfc_cat3_vs_1_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_cat2_vs_1 = lfc_cat2_vs_1,
+                     lfc_cat3_vs_1 = lfc_cat3_vs_1) 
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + cat_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy[, "cat_cov2"])
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy[, "cat_cov3"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC2
+    set.seed(123)
+    output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                      fix_formula = "cont_cov + cat_cov", rand_formula = NULL,
+                      p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                      prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                      group = "cat_cov", struc_zero = FALSE, neg_lb = FALSE,
+                      alpha = 0.05, n_cl = 1, verbose = FALSE,
+                      global = FALSE, pairwise = FALSE, 
+                      dunnet = TRUE, trend = FALSE,
+                      iter_control = list(tol = 1e-5, max_iter = 20, 
+                                          verbose = FALSE),
+                      em_control = list(tol = 1e-5, max_iter = 100),
+                      lme_control = NULL, 
+                      mdfdr_control = list(fwer_ctrl_method = "holm", B = 100), 
+                      trend_control = NULL)
+    
+    res_dunn = output$res_dunn
+    tab_sens = output$pseudo_sens_tab
+    sens_cut = 1
+    res_merge = res_dunn %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = lfc_cat_cov2 * diff_cat_cov2,
+                       lfc_est2 = lfc_cat_cov3 * diff_cat_cov3) %>%
+      dplyr::left_join(tab_sens %>%
+                         dplyr::transmute(taxon, 
+                                          sens1 = cat_cov2,
+                                          sens2 = cat_cov3),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, 
+                                          lfc_true1 = lfc_cat2_vs_1,
+                                          lfc_true2 = lfc_cat3_vs_1),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = lfc_est1 * (sens1 < sens_cut),
+                       lfc_est2 = lfc_est2 * (sens2 < sens_cut),
+                       lfc_est1 = case_when(lfc_est1 > 0 ~ 1,
+                                            lfc_est1 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_est2 = case_when(lfc_est2 > 0 ~ 1,
+                                            lfc_est2 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_true1 = case_when(lfc_true1 > 0 ~ 1,
+                                             lfc_true1 < 0 ~ -1,
+                                             TRUE ~ 0),
+                       lfc_true2 = case_when(lfc_true2 > 0 ~ 1,
+                                             lfc_true2 < 0 ~ -1,
+                                             TRUE ~ 0))
+    lfc_est1 = res_merge$lfc_est1
+    lfc_true1 = res_merge$lfc_true1
+    lfc_est2 = res_merge$lfc_est2
+    lfc_true2 = res_merge$lfc_true2
+    
+    tp1 = sum(lfc_true1 == 1 & lfc_est1 == 1) +
+      sum(lfc_true1 == -1 & lfc_est1 == -1)
+    fp1 = sum(lfc_true1 == 0 & lfc_est1 != 0) +
+      sum(lfc_true1 == 1 & lfc_est1 == -1) +
+      sum(lfc_true1 == -1 & lfc_est1 == 1)
+    fn1 = sum(lfc_true1 != 0 & lfc_est1 == 0)
+    
+    tp2 = sum(lfc_true2 == 1 & lfc_est2 == 1) +
+      sum(lfc_true2 == -1 & lfc_est2 == -1)
+    fp2 = sum(lfc_true2 == 0 & lfc_est2 != 0) +
+      sum(lfc_true2 == 1 & lfc_est2 == -1) +
+      sum(lfc_true2 == -1 & lfc_est2 == 1)
+    fn2 = sum(lfc_true2 != 0 & lfc_est2 == 0)
+
+    tp = tp1 + tp2
+    fp = fp1 + fp2
+    fn = fn1 + fn2
+    
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_dunn_ancombc2.csv")
+```
+
+## ANCOM-BC
+
+```{r, eval=FALSE}
+cl = makeCluster(4)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by batches
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                       runif(n/3, min = 1e-3, max = 1e-2),
+                                       runif(n/3, min = 1e-2, max = 1e-1))),
+                     cont_cov = rnorm(n),
+                     cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+    
+    d = nrow(abn_data)   
+    lfc_cat2_vs_1 = lfc_cat2_vs_1_list[[as.character(diff_prop)]]
+    lfc_cat3_vs_1 = lfc_cat3_vs_1_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_cat2_vs_1 = lfc_cat2_vs_1,
+                     lfc_cat3_vs_1 = lfc_cat3_vs_1) 
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + cat_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy[, "cat_cov2"])
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy[, "cat_cov3"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC
+    set.seed(123)
+    output = ancombc(data = tse, assay_name = "counts", 
+                     tax_level = NULL, phyloseq = NULL, 
+                     formula = "cont_cov + cat_cov", 
+                     p_adj_method = "holm", prv_cut = 0.10, lib_cut = 1000, 
+                     group = "cat_cov", struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
+                     max_iter = 100, conserve = TRUE, alpha = 0.05, global = FALSE,
+                     n_cl = 1, verbose = FALSE)
+    
+    res_prim = output$res
+    res_merge = res_prim$lfc %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = cat_cov2,
+                       lfc_est2 = cat_cov3) %>%
+      dplyr::left_join(res_prim$diff_abn %>%
+                         dplyr::transmute(taxon, 
+                                          diff1 = cat_cov2,
+                                          diff2 = cat_cov3),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, 
+                                          lfc_true1 = lfc_cat2_vs_1,
+                                          lfc_true2 = lfc_cat3_vs_1),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = lfc_est1 * diff1,
+                       lfc_est2 = lfc_est2 * diff2,
+                       lfc_est1 = case_when(lfc_est1 > 0 ~ 1,
+                                            lfc_est1 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_est2 = case_when(lfc_est2 > 0 ~ 1,
+                                            lfc_est2 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_true1 = case_when(lfc_true1 > 0 ~ 1,
+                                             lfc_true1 < 0 ~ -1,
+                                             TRUE ~ 0),
+                       lfc_true2 = case_when(lfc_true2 > 0 ~ 1,
+                                             lfc_true2 < 0 ~ -1,
+                                             TRUE ~ 0))
+    lfc_est1 = res_merge$lfc_est1
+    lfc_true1 = res_merge$lfc_true1
+    lfc_est2 = res_merge$lfc_est2
+    lfc_true2 = res_merge$lfc_true2
+    
+    tp1 = sum(lfc_true1 == 1 & lfc_est1 == 1) +
+      sum(lfc_true1 == -1 & lfc_est1 == -1)
+    fp1 = sum(lfc_true1 == 0 & lfc_est1 != 0) +
+      sum(lfc_true1 == 1 & lfc_est1 == -1) +
+      sum(lfc_true1 == -1 & lfc_est1 == 1)
+    fn1 = sum(lfc_true1 != 0 & lfc_est1 == 0)
+    
+    tp2 = sum(lfc_true2 == 1 & lfc_est2 == 1) +
+      sum(lfc_true2 == -1 & lfc_est2 == -1)
+    fp2 = sum(lfc_true2 == 0 & lfc_est2 != 0) +
+      sum(lfc_true2 == 1 & lfc_est2 == -1) +
+      sum(lfc_true2 == -1 & lfc_est2 == 1)
+    fn2 = sum(lfc_true2 != 0 & lfc_est2 == 0)
+
+    tp = tp1 + tp2
+    fp = fp1 + fp2
+    fn = fn1 + fn2
+    
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_dunn_ancombc.csv")
+```
+
+## LinDA
+
+```{r, eval=FALSE}
+cl = makeCluster(2)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "MicrobiomeStat", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by batches
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                       runif(n/3, min = 1e-3, max = 1e-2),
+                                       runif(n/3, min = 1e-2, max = 1e-1))),
+                     cont_cov = rnorm(n),
+                     cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+    
+    d = nrow(abn_data)   
+    lfc_cat2_vs_1 = lfc_cat2_vs_1_list[[as.character(diff_prop)]]
+    lfc_cat3_vs_1 = lfc_cat3_vs_1_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_cat2_vs_1 = lfc_cat2_vs_1,
+                     lfc_cat3_vs_1 = lfc_cat3_vs_1) %>%
+      mutate(lfc_cat3_vs_2 = lfc_cat3_vs_1 - lfc_cat2_vs_1)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + cat_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy[, "cat_cov2"])
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy[, "cat_cov3"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    # Run LinDA
+    output = linda(feature.dat = otu_data, meta.dat = smd,
+                   formula = "~ cont_cov + cat_cov",
+                   alpha = 0.05, 
+                   prev.filter = 0.10, 
+                   mean.abund.filter = 0,
+                   adaptive = TRUE,
+                   max.abund.filter = 0,
+                   p.adj.method = "holm",
+                   n.cores = 1, 
+                   verbose = FALSE)
+    
+    res = output$output
+    res_merge = res$cat_cov2 %>%
+      rownames_to_column("taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = log2FoldChange * reject) %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, 
+                                          lfc_true1 = lfc_cat2_vs_1),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = case_when(lfc_est1 > 0 ~ 1,
+                                            lfc_est1 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_true1 = case_when(lfc_true1 > 0 ~ 1,
+                                             lfc_true1 < 0 ~ -1,
+                                             TRUE ~ 0)) %>%
+      dplyr::left_join(
+        res$cat_cov3 %>%
+          rownames_to_column("taxon") %>%
+          dplyr::transmute(taxon, 
+                           lfc_est2 = log2FoldChange * reject) %>%
+          dplyr::left_join(fmd %>%
+                             dplyr::transmute(taxon, 
+                                              lfc_true2 = lfc_cat3_vs_1),
+                           by = "taxon") %>%
+          dplyr::transmute(taxon, 
+                           lfc_est2 = case_when(lfc_est2 > 0 ~ 1,
+                                                lfc_est2 < 0 ~ -1,
+                                                TRUE ~ 0),
+                           lfc_true2 = case_when(lfc_true2 > 0 ~ 1,
+                                                 lfc_true2 < 0 ~ -1,
+                                                 TRUE ~ 0)),
+        by = "taxon")
+    
+    lfc_est1 = res_merge$lfc_est1
+    lfc_true1 = res_merge$lfc_true1
+    lfc_est2 = res_merge$lfc_est2
+    lfc_true2 = res_merge$lfc_true2
+    
+    tp1 = sum(lfc_true1 == 1 & lfc_est1 == 1) +
+      sum(lfc_true1 == -1 & lfc_est1 == -1)
+    fp1 = sum(lfc_true1 == 0 & lfc_est1 != 0) +
+      sum(lfc_true1 == 1 & lfc_est1 == -1) +
+      sum(lfc_true1 == -1 & lfc_est1 == 1)
+    fn1 = sum(lfc_true1 != 0 & lfc_est1 == 0)
+
+    tp2 = sum(lfc_true2 == 1 & lfc_est2 == 1) +
+      sum(lfc_true2 == -1 & lfc_est2 == -1)
+    fp2 = sum(lfc_true2 == 0 & lfc_est2 != 0) +
+      sum(lfc_true2 == 1 & lfc_est2 == -1) +
+      sum(lfc_true2 == -1 & lfc_est2 == 1)
+    fn2 = sum(lfc_true2 != 0 & lfc_est2 == 0)
+    
+    tp = tp1 + tp2
+    fp = fp1 + fp2
+    fn = fn1 + fn2
+    
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_dunn_linda.csv")
+```
+
+## Visualization
+
+```{r, fig.height=8, fig.width=10}
+df_ancombc2 = read_csv("../outputs/sim_fixed/cat/sim_dunn_ancombc2.csv")
+df_ancombc = read_csv("../outputs/sim_fixed/cat/sim_dunn_ancombc.csv")
+df_linda = read_csv("../outputs/sim_fixed/cat/sim_dunn_linda.csv")
+
+simpattern = distinct(df_sim_params, n, diff_prop) %>%
+  unite("setting", n:diff_prop, sep = ", ")
+
+df_ancombc2 = df_ancombc2 %>%
+  mutate(method = "ANCOM-BC2",
+         setting = rep(simpattern$setting, each = iter_num))
+df_ancombc = df_ancombc %>%
+  mutate(method = "ANCOM-BC",
+         setting = rep(simpattern$setting, each = iter_num))
+df_linda = df_linda %>%
+  mutate(method = "LinDA",
+         setting = rep(simpattern$setting, each = iter_num))
+
+df_fig = df_ancombc2 %>%
+  bind_rows(df_ancombc) %>%
+  bind_rows(df_linda) %>%
+  separate(setting, c("n", "diff_prop"), ", ")
+df_fig$method = factor(df_fig$method, 
+                       levels = c("ANCOM-BC2", "ANCOM-BC", "LinDA"))
+
+fig_power_dunn = df_fig %>%
+  ggline(x = "n", y = "X1", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL))
+
+fig_fdr_dunn = df_fig %>%
+  ggline(x = "n", y = "X2", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "mdFDR", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed")
+
+fig_dunn = ggarrange(fig_fdr_dunn, fig_power_dunn, 
+                     ncol = 1, common.legend = TRUE)
+fig_dunn
+
+# Simulation summary
+df_tab = df_fig %>%
+  unite("setting", n:diff_prop, sep = ", ")
+df_tab$setting = factor(df_tab$setting, 
+                        levels = c(paste0("10, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("20, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("50, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("100, ", c(0.1, 0.2, 0.5, 0.9))))
+
+tab = df_tab %>% 
+  group_by(method, setting) %>% 
+  summary_table(summary_template)
+
+addWorksheet(wb, "dunn")
+writeData(wb, "dunn", tab)
+```
+
+# Case 4: Pairwise test {.tabset}
+
+1 continuous covariate + 1 categorical covariate with three levels
+
+```{r}
+# Simulation settings
+set.seed(12345)
+data(QMP, package = "ANCOMBC")
+n = c(30, 60, 90, 150, 300)
+d = ncol(QMP)
+diff_prop = c(0.1, 0.2, 0.5, 0.9)
+iter_num = 100
+seed = seq_len(iter_num)
+df_sim_params = data.frame(expand.grid(n, diff_prop, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, seed = Var3) %>%
+  arrange(n, diff_prop, seed)
+list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
+
+lfc_value = c(-2, -1, 1, 2)
+lfc_cat2_vs_1_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cat2_vs_1_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                                   prob = c(1 - diff_prop[i],
+                                            rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cat2_vs_1_list) = diff_prop
+
+lfc_cat3_vs_1_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cat3_vs_1_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                                   prob = c(1 - diff_prop[i],
+                                            rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cat3_vs_1_list) = diff_prop
+
+lfc_cont_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cont_list[[i]] = sample(c(0, 1), size = d, replace = TRUE,
+                              prob = c(1 - diff_prop[i], diff_prop[i]))
+}
+names(lfc_cont_list) = diff_prop
+```
+
+## ANCOM-BC2
+
+```{r, eval=FALSE}
+# detect all cpus per task
+ncpus = Sys.getenv("SLURM_CPUS_PER_TASK")
+# make cluster with ncpus
+cl = makeCluster(strtoi(ncpus))
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by batches
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                       runif(n/3, min = 1e-3, max = 1e-2),
+                                       runif(n/3, min = 1e-2, max = 1e-1))),
+                     cont_cov = rnorm(n),
+                     cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+    
+    d = nrow(abn_data)   
+    lfc_cat2_vs_1 = lfc_cat2_vs_1_list[[as.character(diff_prop)]]
+    lfc_cat3_vs_1 = lfc_cat3_vs_1_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_cat2_vs_1 = lfc_cat2_vs_1,
+                     lfc_cat3_vs_1 = lfc_cat3_vs_1) %>%
+      mutate(lfc_cat3_vs_2 = lfc_cat3_vs_1 - lfc_cat2_vs_1)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + cat_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy[, "cat_cov2"])
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy[, "cat_cov3"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC2
+    set.seed(123)
+    output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                      fix_formula = "cont_cov + cat_cov", rand_formula = NULL,
+                      p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                      prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                      group = "cat_cov", struc_zero = FALSE, neg_lb = FALSE,
+                      alpha = 0.05, n_cl = 1, verbose = FALSE,
+                      global = FALSE, pairwise = TRUE, 
+                      dunnet = FALSE, trend = FALSE,
+                      iter_control = list(tol = 1e-5, max_iter = 20, 
+                                          verbose = FALSE),
+                      em_control = list(tol = 1e-5, max_iter = 100),
+                      lme_control = NULL, 
+                      mdfdr_control = list(fwer_ctrl_method = "holm", B = 100), 
+                      trend_control = NULL)
+    
+    res_pair = output$res_pair
+    tab_sens = output$pseudo_sens_tab
+    sens_cut = 1
+    res_merge = res_pair %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = lfc_cat_cov2 * diff_cat_cov2,
+                       lfc_est2 = lfc_cat_cov3 * diff_cat_cov3,
+                       lfc_est3 = lfc_cat_cov3_cat_cov2 * diff_cat_cov3_cat_cov2) %>%
+      dplyr::left_join(tab_sens %>%
+                         dplyr::transmute(taxon, 
+                                          sens1 = `cat_cov1 - cat_cov2`,
+                                          sens2 = `cat_cov1 - cat_cov3`,
+                                          sens3 = `cat_cov2 - cat_cov3`),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, 
+                                          lfc_true1 = lfc_cat2_vs_1,
+                                          lfc_true2 = lfc_cat3_vs_1,
+                                          lfc_true3 = lfc_cat3_vs_2),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon, 
+                       lfc_est1 = lfc_est1 * (sens1 < sens_cut),
+                       lfc_est2 = lfc_est2 * (sens2 < sens_cut),
+                       lfc_est3 = lfc_est3 * (sens3 < sens_cut),
+                       lfc_est1 = case_when(lfc_est1 > 0 ~ 1,
+                                            lfc_est1 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_est2 = case_when(lfc_est2 > 0 ~ 1,
+                                            lfc_est2 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_est3 = case_when(lfc_est3 > 0 ~ 1,
+                                            lfc_est3 < 0 ~ -1,
+                                            TRUE ~ 0),
+                       lfc_true1 = case_when(lfc_true1 > 0 ~ 1,
+                                             lfc_true1 < 0 ~ -1,
+                                             TRUE ~ 0),
+                       lfc_true2 = case_when(lfc_true2 > 0 ~ 1,
+                                             lfc_true2 < 0 ~ -1,
+                                             TRUE ~ 0),
+                       lfc_true3 = case_when(lfc_true3 > 0 ~ 1,
+                                             lfc_true3 < 0 ~ -1,
+                                             TRUE ~ 0))
+    lfc_est1 = res_merge$lfc_est1
+    lfc_true1 = res_merge$lfc_true1
+    lfc_est2 = res_merge$lfc_est2
+    lfc_true2 = res_merge$lfc_true2
+    lfc_est3 = res_merge$lfc_est3
+    lfc_true3 = res_merge$lfc_true3
+    
+    tp1 = sum(lfc_true1 == 1 & lfc_est1 == 1) +
+      sum(lfc_true1 == -1 & lfc_est1 == -1)
+    fp1 = sum(lfc_true1 == 0 & lfc_est1 != 0) +
+      sum(lfc_true1 == 1 & lfc_est1 == -1) +
+      sum(lfc_true1 == -1 & lfc_est1 == 1)
+    fn1 = sum(lfc_true1 != 0 & lfc_est1 == 0)
+    
+    tp2 = sum(lfc_true2 == 1 & lfc_est2 == 1) +
+      sum(lfc_true2 == -1 & lfc_est2 == -1)
+    fp2 = sum(lfc_true2 == 0 & lfc_est2 != 0) +
+      sum(lfc_true2 == 1 & lfc_est2 == -1) +
+      sum(lfc_true2 == -1 & lfc_est2 == 1)
+    fn2 = sum(lfc_true2 != 0 & lfc_est2 == 0)
+    
+    tp3 = sum(lfc_true3 == 1 & lfc_est3 == 1) +
+      sum(lfc_true3 == -1 & lfc_est3 == -1)
+    fp3 = sum(lfc_true3 == 0 & lfc_est3 != 0) +
+      sum(lfc_true3 == 1 & lfc_est3 == -1) +
+      sum(lfc_true3 == -1 & lfc_est3 == 1)
+    fn3 = sum(lfc_true3 != 0 & lfc_est3 == 0)
+    
+    tp = tp1 + tp2 + tp3
+    fp = fp1 + fp2 + fp3
+    fn = fn1 + fn2 + fn3
+    
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "sim_pair_ancombc2.csv")
+```
+
+## Visualization
+
+```{r, fig.height=8, fig.width=10}
+df = read_csv("../outputs/sim_fixed/cat/sim_pair_ancombc2.csv")
+
+simpattern = distinct(df_sim_params, n, diff_prop)
+df_fig = df %>%
+  mutate(n = rep(simpattern$n, each = iter_num),
+         diff_prop = rep(simpattern$diff_prop, each = iter_num)) %>%
+  replace_na(list(X1 = 0, X2 = 0))
+
+fig_power_pair = df_fig %>%
+  ggboxplot(x = "n", y = "X1", color = "n", palette = "jco", 
+            add = "jitter", add.params = list(size = 0.5), 
+            xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL))
+
+fig_fdr_pair = df_fig %>%
+  ggboxplot(x = "n", y = "X2", color = "n", palette = "jco", 
+            add = "jitter", add.params = list(size = 0.5), 
+            xlab = "Sample Size", ylab = "mdFDR", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed")
+
+fig_pair = ggarrange(fig_fdr_pair, fig_power_pair, 
+                     ncol = 1, common.legend = TRUE)
+fig_pair
+
+# Simulation summary
+df_tab = df_fig %>%
+  unite("setting", n:diff_prop, sep = ", ")
+df_tab$setting = factor(df_tab$setting, 
+                        levels = c(paste0("10, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("20, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("50, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("100, ", c(0.1, 0.2, 0.5, 0.9))))
+
+tab = df_tab %>% 
+  group_by(setting) %>% 
+  summary_table(summary_template)
+
+addWorksheet(wb, "pair")
+writeData(wb, "pair", tab)
+```
+
+# Case 5: Trend test {.tabset}
+
+1 continuous covariate + 1 categorical covariate (with three levels)
+
+```{r}
+# Simulation settings
+set.seed(12345)
+data(QMP, package = "ANCOMBC")
+n = c(30, 60, 90, 150, 300)
+d = ncol(QMP)
+diff_prop = c(0.1, 0.2, 0.5, 0.9)
+iter_num = 100
+seed = seq_len(iter_num)
+df_sim_params = data.frame(expand.grid(n, diff_prop, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, seed = Var3) %>%
+  arrange(n, diff_prop, seed)
+list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
+
+lfc_value = seq(from = 0.5, to = 2, length.out = 4)
+lfc_cat2_vs_1_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cat2_vs_1_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                                   prob = c(1 - diff_prop[i],
+                                            rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cat2_vs_1_list) = diff_prop
+
+lfc_cont_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cont_list[[i]] = sample(c(0, 1), size = d, replace = TRUE,
+                              prob = c(1 - diff_prop[i], diff_prop[i]))
+}
+names(lfc_cont_list) = diff_prop
+```
+
+## ANCOM-BC2
+
+```{r, eval=FALSE}
+# detect all cpus per task
+ncpus = Sys.getenv("SLURM_CPUS_PER_TASK")
+# make cluster with ncpus
+cl = makeCluster(strtoi(ncpus))
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    Sys.sleep(4)
+    
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by batches
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                       runif(n/3, min = 1e-3, max = 1e-2),
+                                       runif(n/3, min = 1e-2, max = 1e-1))),
+                     cont_cov = rnorm(n),
+                     cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+    
+    d = nrow(abn_data)   
+    lfc_cat2_vs_1 = lfc_cat2_vs_1_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_cat2_vs_1 = lfc_cat2_vs_1) %>%
+      mutate(lfc_cat3_vs_1 = ifelse(lfc_cat2_vs_1 == 0, 0, lfc_cat2_vs_1 + 1))
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + cat_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy[, "cat_cov2"])
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy[, "cat_cov3"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC2
+    set.seed(123)
+    output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                      fix_formula = "cont_cov + cat_cov", rand_formula = NULL,
+                      p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                      prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                      group = "cat_cov", struc_zero = FALSE, neg_lb = FALSE,
+                      alpha = 0.05, n_cl = 1, verbose = FALSE,
+                      global = TRUE, pairwise = FALSE, 
+                      dunnet = FALSE, trend = TRUE,
+                      iter_control = list(tol = 1e-5, max_iter = 20, 
+                                          verbose = FALSE),
+                      em_control = list(tol = 1e-5, max_iter = 100),
+                      lme_control = NULL, mdfdr_control = NULL, 
+                      trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                                  nrow = 2, byrow = TRUE)),
+                                           node = list(2),
+                                           solver = "ECOS",
+                                           B = 100))
+    
+    res_trend = output$res_trend
+    tab_sens = output$pseudo_sens_tab
+    sens_cut = 1
+    res_merge = res_trend %>%
+      dplyr::transmute(taxon, 
+                       diff_est = diff_abn) %>%
+      dplyr::left_join(tab_sens %>%
+                         dplyr::transmute(taxon, 
+                                          sens = global),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, 
+                                          diff_true = ifelse(lfc_cat2_vs_1 == 0, 0, 1)),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon,
+                       diff_est = diff_est * (sens < sens_cut),
+                       diff_true)
+    diff_est = res_merge$diff_est
+    diff_true = res_merge$diff_true
+    
+    tp = sum(diff_true != 0 & diff_est != 0)
+    fp = sum(diff_true == 0 & diff_est != 0)
+    fn = sum(diff_true != 0 & diff_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+write_csv(data.frame(res_sim), "sim_trend_ancombc2.csv")
+
+stopCluster(cl)
+```
+
+## Visualization
+
+```{r, fig.height=8, fig.width=10}
+df = read_csv("../outputs/sim_fixed/cat/sim_trend.csv")
+
+simpattern = distinct(df_sim_params, n, diff_prop) 
+df_fig = df %>%
+  mutate(n = rep(simpattern$n, each = iter_num),
+         diff_prop = rep(simpattern$diff_prop, each = iter_num)) %>%
+  replace_na(list(X1 = 0, X2 = 0))
+
+fig_fdr_trend = df_fig %>%
+  ggboxplot(x = "n", y = "X2", color = "n", palette = "jco", 
+            add.params = list(size = 0.5), 
+            xlab = "Sample Size", ylab = "FDR", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed")
+
+fig_power_trend = df_fig %>%
+  ggboxplot(x = "n", y = "X1", color = "n", palette = "jco", 
+            add = "jitter", add.params = list(size = 0.5), 
+            xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL))
+
+fig_trend = ggarrange(fig_fdr_trend, fig_power_trend, ncol = 1, common.legend = TRUE)
+fig_trend
+
+# Simulation summary
+df_tab = df_fig %>%
+  unite("setting", n:diff_prop, sep = ", ")
+df_tab$setting = factor(df_tab$setting, 
+                        levels = c(paste0("10, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("20, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("50, ", c(0.1, 0.2, 0.5, 0.9)),
+                                   paste0("100, ", c(0.1, 0.2, 0.5, 0.9))))
+
+tab = df_tab %>% 
+  group_by(setting) %>% 
+  summary_table(summary_template)
+
+addWorksheet(wb, "trend")
+writeData(wb, "trend", tab)
+```
+
+## Additional analysis
+
+```{r, eval=FALSE}
+# Simulation settings
+set.seed(12345)
+data(QMP, package = "ANCOMBC")
+n = c(30, 60, 90, 150, 300)
+d = ncol(QMP)
+diff_prop = 0.9
+iter_num = 100
+seed = seq_len(iter_num)
+df_sim_params = data.frame(expand.grid(n, diff_prop, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, seed = Var3) %>%
+  arrange(n, diff_prop, seed)
+list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
+
+lfc_value = seq(from = 0.5, to = 2, length.out = 4)
+lfc_cat2_vs_1_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cat2_vs_1_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                                   prob = c(1 - diff_prop[i],
+                                            rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cat2_vs_1_list) = diff_prop
+
+lfc_cont_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cont_list[[i]] = sample(c(0, 1), size = d, replace = TRUE,
+                              prob = c(1 - diff_prop[i], diff_prop[i]))
+}
+names(lfc_cont_list) = diff_prop
+
+# detect all cpus per task
+ncpus = Sys.getenv("SLURM_CPUS_PER_TASK")
+# make cluster with ncpus
+cl = makeCluster(strtoi(ncpus))
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+  {
+    Sys.sleep(4)
+    
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = QMP, taxa_are_rows = FALSE, prv_cut = 0.05, 
+                        n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by batches
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                       runif(n/3, min = 1e-3, max = 1e-2),
+                                       runif(n/3, min = 1e-2, max = 1e-1))),
+                     cont_cov = rnorm(n),
+                     cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+    
+    d = nrow(abn_data)   
+    lfc_cat2_vs_1 = lfc_cat2_vs_1_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_cat2_vs_1 = lfc_cat2_vs_1) %>%
+      mutate(lfc_cat3_vs_1 = ifelse(lfc_cat2_vs_1 == 0, 0, lfc_cat2_vs_1 + 1))
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + cat_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy[, "cat_cov2"])
+    log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy[, "cat_cov3"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Create the tse object
+    assays = S4Vectors::SimpleList(counts = otu_data)
+    smd = S4Vectors::DataFrame(smd)
+    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    
+    # Run ANCOM-BC2
+    set.seed(123)
+    output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                      fix_formula = "cont_cov + cat_cov", rand_formula = NULL,
+                      p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                      prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                      group = "cat_cov", struc_zero = FALSE, neg_lb = FALSE,
+                      alpha = 0.05, n_cl = 1, verbose = FALSE,
+                      global = TRUE, pairwise = FALSE, 
+                      dunnet = FALSE, trend = TRUE,
+                      iter_control = list(tol = 1e-5, max_iter = 20, 
+                                          verbose = FALSE),
+                      em_control = list(tol = 1e-5, max_iter = 100),
+                      lme_control = NULL, mdfdr_control = NULL, 
+                      trend_control = list(contrast = list(matrix(c(1, 0, -1, 1),
+                                                                  nrow = 2, byrow = TRUE)),
+                                           node = list(2),
+                                           solver = "ECOS",
+                                           B = 100))
+    
+    res_trend = output$res_trend
+    tab_sens = output$pseudo_sens_tab
+    sens_cut = 1
+    res_merge = res_trend %>%
+      dplyr::transmute(taxon, 
+                       p_val = p_val,
+                       q_val = q_val,
+                       diff_est = ifelse(p_val < 0.05, TRUE, FALSE)) %>%
+      dplyr::left_join(tab_sens %>%
+                         dplyr::transmute(taxon, 
+                                          sens = global),
+                       by = "taxon") %>%
+      dplyr::left_join(fmd %>%
+                         dplyr::transmute(taxon, 
+                                          diff_true = ifelse(lfc_cat2_vs_1 == 0, 0, 1)),
+                       by = "taxon") %>%
+      dplyr::transmute(taxon,
+                       diff_est = diff_est * (sens < sens_cut),
+                       diff_true)
+    diff_est = res_merge$diff_est
+    diff_true = res_merge$diff_true
+    
+    tp = sum(diff_true != 0 & diff_est != 0)
+    fp = sum(diff_true == 0 & diff_est != 0)
+    fn = sum(diff_true != 0 & diff_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+write_csv(data.frame(res_sim), "sim_trend_additional.csv")
+
+stopCluster(cl)
+```
+
+# Output
+
+```{r}
+saveWorkbook(wb, file = "../outputs/sim_summ/summ_fixed.xlsx", overwrite = TRUE)
+
+fig1 = ggarrange(fig_fdr_cont, fig_power_cont, 
+                 fig_fdr_bin, fig_power_bin,
+                 fig_fdr_dunn, fig_power_dunn, 
+                 ncol = 1, labels = c("a", "", "b", "", "c", ""), 
+                 common.legend = TRUE, legend = "bottom")
+ggsave("../figures/main/sim_fixed1.jpeg", width = 10, height = 12, dpi = 100)
+ggsave("../figures/main/sim_fixed1.pdf", width = 10, height = 12)
+
+fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
+                 ncol = 1, labels = c("a", "", "b", ""), 
+                 common.legend = TRUE, legend = "bottom")
+ggsave("../figures/main/sim_fixed2.jpeg", width = 10, height = 10, dpi = 100)
+ggsave("../figures/main/sim_fixed2.pdf", width = 10, height = 10)
+```
+
+# Session information
+
+```{r, message = FALSE, warning = FALSE, comment = NA}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
