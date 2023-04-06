@@ -2192,7 +2192,7 @@ writeData(wb, "trend", tab)
 
 ## Additional analysis
 
-```{r, eval=FALSE}
+```{r}
 # Simulation settings
 set.seed(12345)
 data(QMP, package = "ANCOMBC")
@@ -2221,7 +2221,9 @@ for (i in seq_along(diff_prop)) {
                               prob = c(1 - diff_prop[i], diff_prop[i]))
 }
 names(lfc_cont_list) = diff_prop
+```
 
+```{r, eval=FALSE}
 # detect all cpus per task
 ncpus = Sys.getenv("SLURM_CPUS_PER_TASK")
 # make cluster with ncpus
@@ -2331,9 +2333,37 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
     c(power, fdr)
   }
 
-write_csv(data.frame(res_sim), "sim_trend_additional.csv")
+write_csv(data.frame(res_sim), "sim_trend_alter.csv")
 
 stopCluster(cl)
+```
+
+```{r}
+df = read_csv("../outputs/sim_fixed/cat/sim_trend_alter.csv")
+
+simpattern = distinct(df_sim_params, n, diff_prop) 
+df_fig = df %>%
+  mutate(n = rep(simpattern$n, each = iter_num),
+         diff_prop = rep(simpattern$diff_prop, each = iter_num)) %>%
+  replace_na(list(X1 = 0, X2 = 0))
+
+fig_fdr_trend2 = df_fig %>%
+  ggboxplot(x = "n", y = "X2", color = "n", palette = "jco", 
+            add.params = list(size = 0.5), 
+            xlab = "Sample Size", ylab = "FDR", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed")
+
+fig_power_trend2 = df_fig %>%
+  ggboxplot(x = "n", y = "X1", color = "n", palette = "jco", 
+            add = "jitter", add.params = list(size = 0.5), 
+            xlab = "Sample Size", ylab = "Power", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL))
+
+fig_trend2 = ggarrange(fig_fdr_trend2, fig_power_trend2, ncol = 1, common.legend = TRUE)
+fig_trend2
 ```
 
 # Output
