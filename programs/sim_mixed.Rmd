@@ -1,8 +1,5 @@
 ---
 title: "Simulations for mixed effects models"
-author: 
-  - Huang Lin$^1$
-  - $^1$BCBB, NIEHS
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
   html_document: 
