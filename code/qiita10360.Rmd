@@ -36,7 +36,7 @@ get_upper_tri = function(cormat){
 }
 ```
 
-# 1. Data import
+# Data import
 
 ```{r}
 # Metadata
@@ -107,7 +107,7 @@ tse_genus = tse %>%
   agglomerateByRank(rank = "Genus")
 ```
 
-# 2. Data overview
+# Data overview
 
 1. Number of samples: `r ncol(tse)`
 
@@ -159,7 +159,7 @@ df_summ2 = df_samples %>%
 cbind(df_summ2, df_summ1)
 ```
 
-# 3. Richness
+# Richness
 
 ```{r}
 tse_genus = mia::estimateRichness(tse_genus, 
@@ -175,7 +175,7 @@ df_fig = as.data.frame(colData(tse_genus)) %>%
   filter(!is.na(aridity))
 df_fig$aridity = factor(df_fig$aridity, levels = c("Arid", "Margin", "Hyperarid"))
 
-write_csv(df_fig, "../outputs/qiita_10360/res_alpha.csv")
+write_csv(df_fig, "../results/outputs/qiita_10360_alpha.csv")
 
 fig_violin = df_fig %>%
   ggviolin(x = "aridity", y = "observed", fill = "aridity",
@@ -188,7 +188,7 @@ fig_violin = df_fig %>%
 fig_violin 
 ```
 
-# 4. Run ANCOM-BC2 {.tabset}
+# Run ANCOM-BC2 {.tabset}
 
 ```{r, eval=FALSE}
 set.seed(123)
@@ -215,11 +215,11 @@ output = ancombc2(data = tse_species, assay_name = "counts", tax_level = "Genus"
                                        solver = "ECOS",
                                        B = 100))
 
-saveRDS(output, "../outputs/qiita_10360/res_ancombc2.rds")
+saveRDS(output, "../data/qiita_10360/qiita_10360_ancombc2.rds")
 ```
 
 ```{r}
-output = read_rds(file = "../outputs/qiita_10360/res_ancombc2.rds")
+output = read_rds(file = "../data/qiita_10360/qiita_10360_ancombc2.rds")
 
 res_trend = output$res_trend %>%
   rowwise() %>%
@@ -232,14 +232,6 @@ res_pair = output$res_pair %>%
   mutate(genus = strsplit(taxon, "_")[[1]][6]) %>%
   filter(genus != "NA") %>%
   ungroup()
-
-write_csv(res_trend %>%
-            arrange(desc(diff_abn)), 
-          "../outputs/qiita_10360/res_ancombc2_trend.csv")
-
-write_csv(res_pair %>%
-            arrange(desc(diff_aridityHyperarid_aridityMargin)), 
-          "../outputs/qiita_10360/res_ancombc2_pair.csv")
 ```
 
 ## Structural zeros
@@ -257,8 +249,6 @@ df_zero = output$zero_ind %>%
             Margin = ifelse(`structural_zero (aridity = Margin)` == TRUE, "Absence", "Presence"),
             Hyperarid = ifelse(`structural_zero (aridity = Hyperarid)` == TRUE, "Absence", "Presence")) %>%
   arrange(Arid, Margin)
-
-write_csv(df_zero, "../outputs/qiita_10360/res_presence_absence.csv")
 ```
 
 ## Pseudo-count sensitivity analysis
@@ -304,8 +294,6 @@ fig_sens = tab_sens %>%
   theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
         legend.position = "top")
 fig_sens
-ggsave("../figures/supp/qiita_10360_sens.jpeg", width = 8, height = 8, dpi = 100)
-ggsave("../figures/supp/qiita_10360_sens.pdf", width = 8, height = 8)
 ```
 
 ## Trend test
@@ -342,7 +330,7 @@ fig_heat_trend = df_fig %>%
 fig_heat_trend
 ```
 
-# 5. Run SECOM {.tabset}
+# Run SECOM {.tabset}
 
 ```{r}
 tse_arid = tse_species[, tse_species$aridity == "Arid"]
@@ -518,24 +506,44 @@ heat_hyperarid = df_hyperarid %>%
 heat_hyperarid
 ```
 
-# 6. Outputs
+# Outputs
 
 ```{r}
+write_csv(res_trend %>%
+            arrange(desc(diff_abn)), 
+          "../results/outputs/qiita_10360_ancombc2_trend.csv")
+
+write_csv(res_pair %>%
+            arrange(desc(diff_aridityHyperarid_aridityMargin)), 
+          "../results/outputs/qiita_10360_ancombc2_pair.csv")
+
+write_csv(df_zero, "../results/outputs/qiita_10360_presence_absence.csv")
+
+# Main figures
 fig_main = ggarrange(fig_violin, fig_heat_trend, labels = c("a", "b"), legend = "bottom")
 
-ggsave("../figures/main/qiita_10360.jpeg", width = 10, height = 6, dpi = 100)
-ggsave("../figures/main/qiita_10360.pdf", width = 10, height = 6)
+ggsave(filename = "../results/figures/main_qiita_10360.jpeg", 
+       plot = fig_main, width = 10, height = 6, dpi = 100)
+ggsave(filename = "../results/figures/main_qiita_10360.pdf", 
+       plot = fig_main, width = 10, height = 6)
 
+# Supplementary figures
+ggsave(filename = "../results/figures/supp_qiita_10360_sens.jpeg", 
+       plot = fig_sens, width = 8, height = 8, dpi = 100)
+ggsave(filename = "../results/figures/supp_qiita_10360_sens.pdf", 
+       plot = fig_sens, width = 8, height = 8)
 
 leg = get_legend(heat_arid)
 heat_arid = heat_arid + theme(legend.position = "none")
 heat_margin = heat_margin + theme(legend.position = "none")
 heat_hyperarid = heat_hyperarid + theme(legend.position = "none")
 fig_supp = ggarrange(heat_arid, heat_margin, heat_hyperarid, leg, 
-               ncol = 2, nrow = 2, 
-               labels = c("a", "b", "c", ""))
-ggsave("../figures/supp/qiita_10360_corr.jpeg", width = 16, height = 12, dpi = 100)
-ggsave("../figures/supp/qiita_10360_corr.pdf", width = 16, height = 12)
+                     ncol = 2, nrow = 2, 
+                     labels = c("a", "b", "c", ""))
+ggsave(filename = "../results/figures/supp_qiita_10360_corr.jpeg", 
+       plot = fig_supp, width = 16, height = 12, dpi = 100)
+ggsave(filename = "../results/figures/supp_qiita_10360_corr.pdf", 
+       plot = fig_supp, width = 16, height = 12)
 ```
 
 # Session information

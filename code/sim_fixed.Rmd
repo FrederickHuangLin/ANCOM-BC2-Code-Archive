@@ -15,7 +15,6 @@ library(openxlsx)
 library(tidyverse)
 library(mia)
 library(ggpubr)
-library(caret)
 library(doRNG)
 library(doParallel)
 library(magrittr)
@@ -104,10 +103,8 @@ fig3 = smd3 %>%
   stat_compare_means(comparisons = my_comparisons) +
   guides(color = guide_legend(""))
 
-fig = ggarrange(fig1, fig2, fig3, labels = c("a", "b", "c"), ncol = 3)
-fig
-ggsave("../figures/supp/sim_fixed_batch_effects.jpeg", width = 8, height = 5, dpi = 100)
-ggsave("../figures/supp/sim_fixed_batch_effects.pdf", width = 8, height = 5)
+fig_batch = ggarrange(fig1, fig2, fig3, labels = c("a", "b", "c"), ncol = 3)
+fig_batch
 ```
 
 ## Sensitivity analysis for the pseudo-count addition
@@ -145,12 +142,13 @@ fmd = data.frame(taxon = paste0("T", seq_len(d)),
                  lfc_cat3_vs_1 = lfc_cat)
 
 # Add effect sizes of covariates to the true abundances
-dmy = dummyVars(" ~ cat_cov", data = smd)
-smd_dmy = data.frame(predict(dmy, newdata = smd))
+smd_dmy = model.matrix(~ 0 + cont_cov + cat_cov, data = smd)
+# dmy = caret::dummyVars(" ~ cat_cov", data = smd)
+# smd_dmy = data.frame(predict(dmy, newdata = smd))
 
-log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd$cont_cov)
-log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy$cat_cov.2)
-log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy$cat_cov.3)
+log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"])
+log_abn_data = log_abn_data + outer(fmd$lfc_cat2_vs_1, smd_dmy[, "cat_cov2"])
+log_abn_data = log_abn_data + outer(fmd$lfc_cat3_vs_1, smd_dmy[, "cat_cov3"])
 
 # Add sample- and taxon-specific biases
 log_otu_data = t(t(log_abn_data) + smd$samp_frac)
@@ -205,7 +203,7 @@ res_merge = res_prim %>%
                    ))
 
 
-fig = res_merge %>%
+fig_sens = res_merge %>%
   ggplot(aes(x = taxon, y = sens, color = group)) +
   geom_point() +
   scale_color_brewer(palette = "Dark2", name = NULL) +
@@ -214,9 +212,7 @@ fig = res_merge %>%
   theme_bw() +
   theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
         legend.position = "top")
-fig
-ggsave("../figures/supp/sim_fixed_sens.jpeg", width = 10, height = 5, dpi = 100)
-ggsave("../figures/supp/sim_fixed_sens.pdf", width = 10, height = 5)
+fig_sens
 ```
 
 # Case 1: Test for a continuous exposure {.tabset}
@@ -651,10 +647,10 @@ write_csv(data.frame(res_sim), "sim_cont_locom.csv")
 ## Visualization
 
 ```{r, fig.width=10, fig.height=8}
-df_ancombc2 = read_csv("../outputs/sim_fixed/cont/sim_cont_ancombc2.csv")
-df_ancombc = read_csv("../outputs/sim_fixed/cont/sim_cont_ancombc.csv")
-df_linda = read_csv("../outputs/sim_fixed/cont/sim_cont_linda.csv")
-df_locom = read_csv("../outputs/sim_fixed/cont/sim_cont_locom.csv")
+df_ancombc2 = read_csv("../data/sim_fixed/cont/sim_cont_ancombc2.csv")
+df_ancombc = read_csv("../data/sim_fixed/cont/sim_cont_ancombc.csv")
+df_linda = read_csv("../data/sim_fixed/cont/sim_cont_linda.csv")
+df_locom = read_csv("../data/sim_fixed/cont/sim_cont_locom.csv")
 
 n = c(10, 20, 30, 50, 100)
 simpattern = distinct(df_sim_params, n, diff_prop) %>%
@@ -1154,10 +1150,10 @@ write_csv(data.frame(res_sim), "sim_bin_locom.csv")
 ## Visualization
 
 ```{r, fig.width=10, fig.height=8}
-df_ancombc2 = read_csv("../outputs/sim_fixed/bin/sim_bin_ancombc2.csv")
-df_ancombc = read_csv("../outputs/sim_fixed/bin/sim_bin_ancombc.csv")
-df_linda = read_csv("../outputs/sim_fixed/bin/sim_bin_linda.csv")
-df_locom = read_csv("../outputs/sim_fixed/bin/sim_bin_locom.csv")
+df_ancombc2 = read_csv("../data/sim_fixed/bin/sim_bin_ancombc2.csv")
+df_ancombc = read_csv("../data/sim_fixed/bin/sim_bin_ancombc.csv")
+df_linda = read_csv("../data/sim_fixed/bin/sim_bin_linda.csv")
+df_locom = read_csv("../data/sim_fixed/bin/sim_bin_locom.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) %>%
   unite("setting", n:diff_prop, sep = ", ")
@@ -1675,9 +1671,9 @@ write_csv(data.frame(res_sim), "sim_dunn_linda.csv")
 ## Visualization
 
 ```{r, fig.height=8, fig.width=10}
-df_ancombc2 = read_csv("../outputs/sim_fixed/cat/sim_dunn_ancombc2.csv")
-df_ancombc = read_csv("../outputs/sim_fixed/cat/sim_dunn_ancombc.csv")
-df_linda = read_csv("../outputs/sim_fixed/cat/sim_dunn_linda.csv")
+df_ancombc2 = read_csv("../data/sim_fixed/cat/sim_dunn_ancombc2.csv")
+df_ancombc = read_csv("../data/sim_fixed/cat/sim_dunn_ancombc.csv")
+df_linda = read_csv("../data/sim_fixed/cat/sim_dunn_linda.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) %>%
   unite("setting", n:diff_prop, sep = ", ")
@@ -1945,7 +1941,7 @@ write_csv(data.frame(res_sim), "sim_pair_ancombc2.csv")
 ## Visualization
 
 ```{r, fig.height=8, fig.width=10}
-df = read_csv("../outputs/sim_fixed/cat/sim_pair_ancombc2.csv")
+df = read_csv("../data/sim_fixed/cat/sim_pair_ancombc2.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop)
 df_fig = df %>%
@@ -2143,7 +2139,7 @@ stopCluster(cl)
 ## Visualization
 
 ```{r, fig.height=8, fig.width=10}
-df = read_csv("../outputs/sim_fixed/cat/sim_trend.csv")
+df = read_csv("../data/sim_fixed/cat/sim_trend.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) 
 df_fig = df %>%
@@ -2336,7 +2332,7 @@ stopCluster(cl)
 ```
 
 ```{r}
-df = read_csv("../outputs/sim_fixed/cat/sim_trend_alter.csv")
+df = read_csv("../data/sim_fixed/cat/sim_trend_alter.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) 
 df_fig = df %>%
@@ -2363,24 +2359,40 @@ fig_trend2 = ggarrange(fig_fdr_trend2, fig_power_trend2, ncol = 1, common.legend
 fig_trend2
 ```
 
-# Output
+# Outputs
 
 ```{r}
-saveWorkbook(wb, file = "../outputs/sim_summ/summ_fixed.xlsx", overwrite = TRUE)
+saveWorkbook(wb, file = "../results/outputs/sim_summ_fixed.xlsx", overwrite = TRUE)
 
+# Main figures
 fig1 = ggarrange(fig_fdr_cont, fig_power_cont, 
                  fig_fdr_bin, fig_power_bin,
                  fig_fdr_dunn, fig_power_dunn, 
                  ncol = 1, labels = c("a", "", "b", "", "c", ""), 
                  common.legend = TRUE, legend = "bottom")
-ggsave("../figures/main/sim_fixed1.jpeg", width = 10, height = 12, dpi = 100)
-ggsave("../figures/main/sim_fixed1.pdf", width = 10, height = 12)
+ggsave(filename = "../results/figures/main_sim_fixed1.jpeg", 
+       plot = fig1, width = 10, height = 12, dpi = 100)
+ggsave(filename = "../results/figures/main_sim_fixed1.pdf", 
+       plot = fig1, width = 10, height = 12)
 
 fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
                  ncol = 1, labels = c("a", "", "b", ""), 
                  common.legend = TRUE, legend = "bottom")
-ggsave("../figures/main/sim_fixed2.jpeg", width = 10, height = 10, dpi = 100)
-ggsave("../figures/main/sim_fixed2.pdf", width = 10, height = 10)
+ggsave(filename = "../results/figures/main_sim_fixed2.jpeg", 
+       plot = fig2, width = 10, height = 10, dpi = 100)
+ggsave(filename = "../results/figures/main_sim_fixed2.pdf", 
+       plot = fig2, width = 10, height = 10)
+
+# Supplementary figures
+ggsave(filename = "../results/figures/supp_sim_batch_effects.jpeg", 
+       plot = fig_batch, width = 8, height = 5, dpi = 100)
+ggsave(filename = "../results/figures/supp_sim_batch_effects.pdf", 
+       plot = fig_batch, width = 8, height = 5)
+
+ggsave(filename = "../results/figures/supp_sim_sens.jpeg", 
+       plot = fig_sens, width = 10, height = 5, dpi = 100)
+ggsave(filename = "../results/figures/supp_sim_sens.pdf", 
+       plot = fig_sens, width = 10, height = 5)
 ```
 
 # Session information

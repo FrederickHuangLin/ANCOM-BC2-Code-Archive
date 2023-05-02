@@ -29,7 +29,7 @@ options(DT.options = list(
   '#000', 'color': '#fff'});","}")))
 ```
 
-# 1. Data import
+# Data import
 
 ```{r}
 # Metadata
@@ -87,7 +87,7 @@ tse_species = tse %>%
   agglomerateByRank(rank = "Species")
 ```
 
-# 2. Data overview
+# Data overview
 
 1. Number of samples: `r ncol(tse)`
 
@@ -139,7 +139,7 @@ df_summ2 = df_pts %>%
 cbind(df_summ2, df_summ1)
 ```
 
-# 3. Run ANCOM-BC2 {.tabset}
+# Run ANCOM-BC2 {.tabset}
 
 ```{r, eval=FALSE}
 set.seed(123)
@@ -157,11 +157,11 @@ output = ancombc2(data = tse, assay_name = "counts", tax_level = "Species",
                   lme_control = lme4::lmerControl(),
                   mdfdr_control = list(fwer_ctrl_method = "holm", B = 100))
 
-saveRDS(output, "../outputs/qiita_11546/res_ancombc2.rds")
+saveRDS(output, "../data/qiita_11546/qiita_11546_ancombc2.rds")
 ```
 
 ```{r}
-output = read_rds(file = "../outputs/qiita_11546/res_ancombc2.rds")
+output = read_rds(file = "../data/qiita_11546/qiita_11546_ancombc2.rds")
 res_pair = output$res_pair %>%
   rowwise() %>%
   mutate(species = strsplit(taxon, "_")[[1]][7]) %>%
@@ -183,8 +183,6 @@ df_zero = output$zero_ind %>%
             Ileocolonic = ifelse(`structural_zero (surgery_type = ileocolonic)` == TRUE, "Absence", "Presence"),
             Colectomy = ifelse(`structural_zero (surgery_type = colectomy)` == TRUE, "Absence", "Presence")) %>%
   arrange(None, Ileocolonic)
-
-write_csv(df_zero, "../outputs/qiita_11546/res_presence_absence.csv")
 ```
 
 ## Pseudo-count sensitivity analysis
@@ -231,8 +229,6 @@ fig_sens = tab_sens %>%
   theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
         legend.position = "top")
 fig_sens
-ggsave("../figures/supp/qiita_11546_sens.jpeg", width = 8, height = 8, dpi = 100)
-ggsave("../figures/supp/qiita_11546_sens.pdf", width = 8, height = 8)
 ```
 
 ## Visualization
@@ -272,68 +268,24 @@ fig_heat_pair = df_fig %>%
   theme_minimal() +
   theme(plot.title = element_text(hjust = 0.5))
 fig_heat_pair
-ggsave("../figures/main/qiita_11546.jpeg", width = 6.25, height = 5, dpi = 100)
-ggsave("../figures/main/qiita_11546.pdf", width = 6.25, height = 5)
 ```
 
-```{r, fig.width=10, eval=FALSE}
-df_fig0 = res_pair %>%
-    filter(p_surgery_typeileocolonic < 0.05 | 
-             p_surgery_typecolectomy < 0.05 |
-             p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
-    transmute(species,
-              lfc1 = lfc_surgery_typeileocolonic,
-              lfc2 = lfc_surgery_typecolectomy,
-              lfc3 = lfc_surgery_typecolectomy_surgery_typeileocolonic,
-              se1 = se_surgery_typeileocolonic,
-              se2 = se_surgery_typecolectomy,
-              se3 = se_surgery_typecolectomy_surgery_typeileocolonic) 
+# Outputs
 
-df_fig1 = df_fig0 %>%
-  transmute(species, g1 = lfc1, g2 = lfc2, g3 = lfc3) %>%
-  pivot_longer(cols = g1:g3, 
-               names_to = "group", values_to = "lfc") %>%
-  arrange(species)
+```{r}
+write_csv(df_zero, "../results/outputs/qiita_11546_presence_absence.csv")
 
-df_fig2 = df_fig0 %>%
-  transmute(species, g1 = se1, g2 = se2, g3 = se3) %>%
-  pivot_longer(cols = g1:g3, 
-               names_to = "group", values_to = "se") %>%
-  arrange(species)
+# Main figures
+ggsave(filename = "../results/figures/main_qiita_11546.jpeg", 
+       plot = fig_heat_pair, width = 6.25, height = 5, dpi = 100)
+ggsave(filename = "../results/figures/main_qiita_11546.pdf", 
+       plot = fig_heat_pair, width = 6.25, height = 5)
 
-df_fig = df_fig1 %>%
-  dplyr::left_join(df_fig2, by = c("species", "group"))
-
-df_color = res_pair %>%
-    filter(p_surgery_typecolectomy < 0.05 | 
-             p_surgery_typeileocolonic < 0.05 |
-             p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
-    transmute(species,
-              color = ifelse(q_surgery_typecolectomy < 0.05 |
-                               q_surgery_typeileocolonic < 0.05 |
-                               q_surgery_typecolectomy_surgery_typeileocolonic < 0.05, 
-                             "tan3", "black")) %>%
-    arrange(species)
-
-fig_bar_pair = df_fig %>%
-  ggplot(aes(x = species, y = lfc, fill = group)) +
-  geom_bar(stat = "identity", color = "black", 
-           position = position_dodge(), width = .75) +
-  geom_errorbar(aes(ymin = lfc - se, ymax = lfc + se), 
-                width = .2, position = position_dodge(0.8)) +
-  labs(x = NULL, y = "LFC") +
-  scale_fill_jco(name = NULL, 
-                 labels = c("Ileocolonic - None", 
-                            "Colectomy - None", 
-                            "Colectomy - Ileocolonic")) +
-  theme_pubr() +
-  theme(plot.title = element_text(hjust = 0.5),
-        axis.text.x = element_text(colour = df_color$color,
-                                   angle = 60, hjust = 0.5, vjust = 0.5))
-
-fig_bar_pair
-ggsave("../figures/main/qiita_11546.jpeg", width = 10, height = 5, dpi = 100)
-ggsave("../figures/main/qiita_11546.pdf", width = 10, height = 5)
+# Supplementary Figures
+ggsave(filename = "../results/figures/supp_qiita_11546_sens.jpeg", 
+       plot = fig_sens, width = 8, height = 8, dpi = 100)
+ggsave(filename = "../results/figures/supp_qiita_11546_sens.pdf", 
+       plot = fig_sens, width = 8, height = 8)
 ```
 
 # Session information

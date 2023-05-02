@@ -360,8 +360,8 @@ write_csv(data.frame(res_sim), "sim_int_linda.csv")
 ## Visualization
 
 ```{r, fig.width=10, fig.height=6.25}
-df_ancombc2 = read_csv("../outputs/sim_mixed/sim_int_ancombc2.csv")
-df_linda = read_csv("../outputs/sim_mixed/sim_int_linda.csv")
+df_ancombc2 = read_csv("../data/sim_mixed/sim_int_ancombc2.csv")
+df_linda = read_csv("../data/sim_mixed/sim_int_linda.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) %>%
   unite("setting", n:diff_prop, sep = ", ")
@@ -757,8 +757,8 @@ write_csv(data.frame(res_sim), "sim_slope_linda.csv")
 ## Visualization
 
 ```{r, fig.width=10, fig.height=6.25}
-df_ancombc2 = read_csv("../outputs/sim_mixed/sim_slope_ancombc2.csv")
-df_linda = read_csv("../outputs/sim_mixed/sim_slope_linda.csv")
+df_ancombc2 = read_csv("../data/sim_mixed/sim_slope_ancombc2.csv")
+df_linda = read_csv("../data/sim_mixed/sim_slope_linda.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) %>%
   unite("setting", n:diff_prop, sep = ", ")
@@ -819,16 +819,18 @@ addWorksheet(wb, "slope")
 writeData(wb, "slope", tab)
 ```
 
-# Output
+# Outputs
 
 ```{r}
-saveWorkbook(wb, file = "../outputs/sim_summ/summ_mixed.xlsx", overwrite = TRUE)
+saveWorkbook(wb, file = "../results/outputs/sim_summ_mixed.xlsx", overwrite = TRUE)
 
 fig = ggarrange(fig_fdr1, fig_power1, fig_fdr2, fig_power2,
                 ncol = 1, labels = c("a", "", "b", ""), 
                 common.legend = TRUE, legend = "bottom")
-ggsave("../figures/main/sim_mixed.jpeg", width = 10, height = 10, dpi = 100)
-ggsave("../figures/main/sim_mixed.pdf", width = 10, height = 10)
+ggsave(filename = "../results/figures/main_sim_mixed.jpeg", 
+       plot = fig, width = 10, height = 10, dpi = 100)
+ggsave(filename = "../results/figures/main_sim_mixed.pdf", 
+       plot = fig, width = 10, height = 10)
 ```
 
 # Session information
