@@ -171,13 +171,11 @@ tse_genus = mia::estimateDiversity(tse_genus,
                                    index = "shannon", 
                                    name = "shannon")
 
-df_fig = as.data.frame(colData(tse_genus)) %>%
+df_alpha = as.data.frame(colData(tse_genus)) %>%
   filter(!is.na(aridity))
-df_fig$aridity = factor(df_fig$aridity, levels = c("Arid", "Margin", "Hyperarid"))
+df_alpha$aridity = factor(df_alpha$aridity, levels = c("Arid", "Margin", "Hyperarid"))
 
-write_csv(df_fig, "../results/outputs/qiita_10360_alpha.csv")
-
-fig_violin = df_fig %>%
+fig_violin = df_alpha %>%
   ggviolin(x = "aridity", y = "observed", fill = "aridity",
            add = c("jitter", "median_iqr")) + 
   annotate("text", x = 3, y = 450, label = "p < 0.0001", 
@@ -509,6 +507,8 @@ heat_hyperarid
 # Outputs
 
 ```{r}
+write_csv(df_alpha, "../results/outputs/qiita_10360_alpha.csv")
+
 write_csv(res_trend %>%
             arrange(desc(diff_abn)), 
           "../results/outputs/qiita_10360_ancombc2_trend.csv")
