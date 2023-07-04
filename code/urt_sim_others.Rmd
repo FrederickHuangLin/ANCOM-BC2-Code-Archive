@@ -1,0 +1,287 @@
+---
+title: "Other simulation benchmarks: upper respiratory tract microbiome data"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document: 
+    toc: true
+    theme: united
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
+                      message = FALSE, comment = NA,
+                      fig.width = 6.25, fig.height = 5)
+library(openxlsx)
+library(tidyverse)
+library(mia)
+library(ggpubr)
+library(doRNG)
+library(doParallel)
+library(magrittr)
+library(qwraps2)
+library(ANCOMBC)
+library(MicrobiomeStat)
+library(LOCOM)
+```
+
+```{r helper}
+logsumexp = function (x) {
+  y = max(x)
+  y + log(sum(exp(x - y)))
+}
+
+softmax = function (x) {
+  exp(x - logsumexp(x))
+}
+
+options(qwraps2_markup = "markdown")
+summary_template =
+  list("Power" =
+         list("power_mean" = ~ round(mean(X1, na.rm = TRUE), 2),
+              "power_sd" = ~ round(sd(X1, na.rm = TRUE), 2)),
+       "FDR" = 
+         list("fdr_mean" = ~ round(mean(X2, na.rm = TRUE), 2),
+              "fdr_sd" = ~ round(sd(X2, na.rm = TRUE), 2))
+  )
+
+wb = createWorkbook()
+```
+
+# Batch effects in sampling fractions
+
+```{r, fig.width=8}
+n = 150
+diff_prop = 0.1
+lfc_cont = -2
+lfc_bin = 1
+
+set.seed(123)
+
+# Continuous covariate
+smd1 = data.frame(sample = paste0("S", seq_len(n)),
+                  cont_cov = rnorm(n),
+                  bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
+  dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+
+fig1 = smd1 %>%
+  ggscatter(x = "cont_cov", y = "samp_frac", add = "reg.line",  
+            add.params = list(color = "blue", fill = "lightgray"), 
+            conf.int = TRUE, cor.coef = TRUE, 
+            cor.coeff.args = list(method = "pearson", 
+                                  label.x = -2, label.sep = "\n"),
+            xlab = "Continuous Exposure", ylab = "Sampling Fraction")
+
+# Binary covariate
+smd2 = data.frame(sample = paste0("S", seq_len(n)),
+                  samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                     runif(n/2, min = 1e-3, max = 1e-2))),
+                  cont_cov = rnorm(n),
+                  bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+
+fig2 = smd2 %>%
+  ggboxplot(x = "bin_cov", y = "samp_frac", color = "bin_cov",
+            add = "jitter", palette = "aaas",
+            xlab = "Binary Exposure", ylab = "Sampling Fraction") +
+  stat_compare_means() +
+  guides(color = guide_legend(""))
+
+# Categorical covariate
+my_comparisons = list(c("1", "2"), c("2", "3"))
+smd3 = data.frame(sample = paste0("S", seq_len(n)),
+                  samp_frac = log(c(runif(n/3, min = 1e-4, max = 1e-3),
+                                    runif(n/3, min = 1e-3, max = 1e-2),
+                                    runif(n/3, min = 1e-2, max = 1e-1))),
+                  cont_cov = rnorm(n),
+                  cat_cov = as.factor(rep(seq_len(3), each = n/3)))
+
+fig3 = smd3 %>%
+  ggboxplot(x = "cat_cov", y = "samp_frac", color = "cat_cov",
+            add = "jitter", palette = "aaas",
+            xlab = "Categorical Exposure", ylab = "Sampling Fraction") +
+  stat_compare_means(comparisons = my_comparisons) +
+  guides(color = guide_legend(""))
+
+fig_batch = ggarrange(fig1, fig2, fig3, labels = c("a", "b", "c"), ncol = 3)
+fig_batch
+```
+
+# Computing time
+
+```{r}
+
+```
+
+# Power/FDR comparison {.tabset}
+
+1 continuous exposure + 1 binary confounder
+
+```{r}
+# Simulation settings
+data(throat.otu.table, package = "LOCOM")
+# Use the URT data as the template to obtain mean vector and variance-covariance
+# matrix. Discard OTUs that have less than 5% of prevalence across samples
+prevalence = apply(t(throat.otu.table), 1, function(x)
+  sum(x != 0, na.rm = TRUE)/length(x[!is.na(x)]))
+tax_keep = which(prevalence >= 0.05)
+
+set.seed(12345)
+n = 100
+d = length(tax_keep)
+diff_prop = 0.1 # true proportion of DA taxa
+sig_level = seq(0.05, 1, 0.05)
+iter_num = 100
+seed = seq_len(iter_num)
+df_sim_params = data.frame(expand.grid(n, diff_prop, sig_level, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, sig_level = Var3, seed = Var4) %>%
+  arrange(n, diff_prop, seed)
+list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
+
+# Log-fold-changes for the continuous exposure of DA taxa
+lfc_value = c(-2, -1, 1, 2)
+# Select the positions of DA taxa for each proportion
+lfc_cont_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_cont_list[[i]] = sample(c(0, lfc_value), size = d, replace = TRUE,
+                              prob = c(1 - diff_prop[i], 
+                                       rep(diff_prop[i]/length(lfc_value), length(lfc_value))))
+}
+names(lfc_cont_list) = diff_prop
+
+# Log-fold-changes for the binary confounder
+lfc_bin_list = vector("list", length = length(diff_prop))
+for (i in seq_along(diff_prop)) {
+  lfc_bin_list[[i]] = sample(c(0, 1), size = d, replace = TRUE,
+                             prob = c(1 - diff_prop[i], diff_prop[i]))
+}
+names(lfc_bin_list) = diff_prop
+```
+
+## ANCOM-BC2
+
+```{r, eval=FALSE}
+
+```
+
+## ANCOM-BC
+
+```{r, eval=FALSE}
+
+```
+
+## LinDA
+
+```{r, eval=FALSE}
+
+```
+
+## LOCOM
+
+```{r, eval=FALSE}
+
+```
+
+## Visualization
+
+```{r, fig.width=10, fig.height=8}
+df_ancombc2 = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_ancombc2.csv")
+df_ancombc = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_ancombc.csv")
+df_linda = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_linda.csv")
+df_locom = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_locom.csv")
+
+simpattern = distinct(df_sim_params, n, diff_prop) %>%
+  unite("setting", n:diff_prop, sep = ", ")
+
+df_ancombc2_no_filter = df_ancombc2 %>%
+  dplyr::select(X1, X2) %>%
+  mutate(method = "ANCOM-BC2 (No Filter)",
+         setting = rep(simpattern$setting, each = iter_num))
+df_ancombc2_ss_filter = df_ancombc2 %>%
+  dplyr::transmute(X1 = X3, X2 = X4) %>%
+  mutate(method = "ANCOM-BC2 (SS Filter)",
+         setting = rep(simpattern$setting, each = iter_num))
+df_ancombc = df_ancombc %>%
+  mutate(method = "ANCOM-BC",
+         setting = rep(simpattern$setting, each = iter_num))
+df_linda = df_linda %>%
+  mutate(method = "LinDA",
+         setting = rep(simpattern$setting, each = iter_num))
+df_locom = df_locom %>%
+  mutate(method = "LOCOM",
+         setting = rep(simpattern$setting, each = iter_num))
+
+df_fig = df_ancombc2_no_filter %>%
+  bind_rows(df_ancombc2_ss_filter) %>%
+  bind_rows(df_ancombc) %>%
+  bind_rows(df_linda) %>%
+  bind_rows(df_locom) %>%
+  separate(setting, c("n", "diff_prop"), ", ") %>%
+  mutate(X1 = replace_na(X1, 0),
+         X2 = replace_na(X2, 0))
+df_fig$method = factor(df_fig$method, 
+                       levels = c("ANCOM-BC2 (No Filter)", "ANCOM-BC2 (SS Filter)",
+                                  "ANCOM-BC", "LinDA", "LOCOM"))
+
+fig_power_cont = df_fig %>%
+  ggline(x = "n", y = "X1", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL))
+
+fig_fdr_cont = df_fig %>%
+  ggline(x = "n", y = "X2", add = "mean_se",
+         color = "method", palette = "npg",
+         xlab = "Sample Size", ylab = "FDR", facet.by = "diff_prop", nrow = 1) +
+  scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
+  guides(color = guide_legend(title = NULL)) +
+  geom_hline(yintercept = 0.05, linetype = "dashed")
+
+fig_cont = ggarrange(fig_fdr_cont, fig_power_cont, 
+                     ncol = 1, common.legend = TRUE)
+fig_cont
+
+# Extract the hex color codes used in "npg" palette
+hex_code = unique(ggplot_build(fig_power_cont)$data[[1]]$colour)
+
+# Simulation summary
+df_tab = df_fig %>%
+  unite("setting", n:diff_prop, sep = ", ")
+df_tab$setting = factor(df_tab$setting, 
+                        levels = c(paste0("10, ", c(0.05, 0.1, 0.2, 0.5, 0.9)),
+                                   paste0("20, ", c(0.05, 0.1, 0.2, 0.5, 0.9)),
+                                   paste0("30, ", c(0.05, 0.1, 0.2, 0.5, 0.9)),
+                                   paste0("50, ", c(0.05, 0.1, 0.2, 0.5, 0.9)),
+                                   paste0("100, ", c(0.05, 0.1, 0.2, 0.5, 0.9))))
+
+tab = df_tab %>% 
+  group_by(method, setting) %>% 
+  summary_table(summary_template)
+
+addWorksheet(wb, "cont")
+writeData(wb, "cont", tab)
+```
+
+# Outputs
+
+```{r}
+# Supplementary figures
+ggsave(filename = "../results/figures/supp_sim_batch_effects.jpeg", 
+       plot = fig_batch, width = 8, height = 5, dpi = 100)
+ggsave(filename = "../results/figures/supp_sim_batch_effects.pdf", 
+       plot = fig_batch, width = 8, height = 5)
+```
+
+# Session information
+
+```{r, message = FALSE, warning = FALSE, comment = NA}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
