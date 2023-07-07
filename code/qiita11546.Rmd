@@ -146,7 +146,7 @@ set.seed(123)
 output = ancombc2(data = tse, assay_name = "counts", tax_level = "Species",
                   fix_formula = "antibiotic_use + surgery_type + time_point_month",
                   rand_formula = "(time_point_month | host_subject_id)",
-                  p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                  p_adj_method = "holm", 
                   prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
                   group = "surgery_type", struc_zero = TRUE, neg_lb = TRUE,
                   alpha = 0.05, n_cl = 6, verbose = TRUE,
@@ -185,68 +185,48 @@ df_zero = output$zero_ind %>%
   arrange(None, Ileocolonic)
 ```
 
-## Pseudo-count sensitivity analysis
-
-```{r, fig.width=8, fig.height=8}
-tab_sens = output$pseudo_sens_tab %>%
-  transmute(taxon, sens = `none - ileocolonic`) %>%
-  dplyr::right_join(res_pair %>%
-                      transmute(taxon, species, diff_abn = diff_surgery_typeileocolonic), 
-                    by = "taxon") %>%
-  mutate(group = "Ileocolonic vs. None") %>%
-  bind_rows(
-    output$pseudo_sens_tab %>%
-    transmute(taxon, sens = `none - colectomy`) %>%
-    dplyr::right_join(res_pair %>%
-                       transmute(taxon, species, diff_abn = diff_surgery_typecolectomy), 
-                      by = "taxon") %>%
-    mutate(group = "Colectomy vs. None")
-  ) %>%
-  bind_rows(
-    output$pseudo_sens_tab %>%
-      transmute(taxon, sens = `ileocolonic - colectomy`) %>%
-      dplyr::right_join(res_pair %>%
-                          transmute(taxon, species, diff_abn = diff_surgery_typecolectomy_surgery_typeileocolonic), 
-                        by = "taxon") %>%
-      mutate(group = "Colectomy vs. Ileocolonic")
-  )
-
-tab_sens$diff_abn = recode(tab_sens$diff_abn * 1, 
-                           `1` = "Significant",
-                           `0` = "Nonsignificant")
-
-tab_sens$group = factor(tab_sens$group, levels = c("Ileocolonic vs. None", 
-                                                   "Colectomy vs. None",
-                                                   "Colectomy vs. Ileocolonic"))
-
-fig_sens = tab_sens %>%
-  ggplot(aes(x = species, y = sens, color = diff_abn)) +
-  facet_grid(rows = vars(group), scales = "free") +
-  geom_point() +
-  scale_color_brewer(palette = "Dark2", name = NULL) +
-  labs(x = NULL, y = "Sensitivity Score") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
-        legend.position = "top")
-fig_sens
-```
-
 ## Visualization
 
 ```{r, fig.width=8}
-df_fig = res_pair %>%
-  filter(q_surgery_typeileocolonic < 0.05 | 
-             q_surgery_typecolectomy < 0.05 |
-             q_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
+df_fig1 = res_pair %>%
+  filter(p_surgery_typeileocolonic < 0.05 | 
+             p_surgery_typecolectomy < 0.05 |
+             p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
   transmute(species,
-            lfc1 = ifelse(q_surgery_typeileocolonic < 0.05, 
+            lfc1 = ifelse(p_surgery_typeileocolonic < 0.05, 
                           round(lfc_surgery_typeileocolonic, 2), 0),
-            lfc2 = ifelse(q_surgery_typecolectomy < 0.05, 
+            lfc2 = ifelse(p_surgery_typecolectomy < 0.05, 
                           round(lfc_surgery_typecolectomy, 2), 0),
-            lfc3 = ifelse(q_surgery_typecolectomy_surgery_typeileocolonic < 0.05, 
+            lfc3 = ifelse(p_surgery_typecolectomy_surgery_typeileocolonic < 0.05, 
                           round(lfc_surgery_typecolectomy_surgery_typeileocolonic, 2), 0)) %>%
   pivot_longer(lfc1:lfc3, names_to = "group", values_to = "value") %>%
   arrange(species)
+
+df_fig2 = res_pair %>%
+  filter(p_surgery_typeileocolonic < 0.05 | 
+             p_surgery_typecolectomy < 0.05 |
+             p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
+  transmute(species,
+            lfc1 = case_when(
+              q_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typeileocolonic == TRUE ~ "aquamarine3",
+              q_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typeileocolonic == FALSE ~ "tan3",
+              TRUE ~ "black"
+            ),
+            lfc2 = case_when(
+              q_surgery_typecolectomy < 0.05 & passed_ss_surgery_typecolectomy == TRUE ~ "aquamarine3",
+              q_surgery_typecolectomy < 0.05 & passed_ss_surgery_typecolectomy == FALSE ~ "tan3",
+              TRUE ~ "black"
+            ),
+            lfc3 = case_when(
+              q_surgery_typecolectomy_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typecolectomy_surgery_typeileocolonic == TRUE ~ "aquamarine3",
+              q_surgery_typecolectomy_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typecolectomy_surgery_typeileocolonic == FALSE ~ "tan3",
+              TRUE ~ "black"
+            )) %>%
+  pivot_longer(lfc1:lfc3, names_to = "group", values_to = "color") %>%
+  arrange(species)
+
+df_fig = df_fig1 %>%
+  dplyr::left_join(df_fig2, by = c("species", "group"))
 
 df_fig$group = recode(df_fig$group, 
                       `lfc1` = "Ileocolonic - None",
@@ -263,29 +243,25 @@ fig_heat_pair = df_fig %>%
   scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
                        na.value = "white", midpoint = 0, limit = c(-6, 6),
                        name = NULL) +
-  geom_text(aes(group, species, label = value), color = "black", size = 4) +
+  geom_text(aes(group, species, label = value, color = color), size = 4) +
+  scale_color_identity(guide = FALSE) +
   labs(x = NULL, y = NULL, title = NULL) +
   theme_minimal() +
   theme(plot.title = element_text(hjust = 0.5))
-fig_heat_pair
 ```
 
 # Outputs
 
 ```{r}
+write_csv(res_pair, 
+          "../results/outputs/qiita_11546_ancombc2_pair.csv")
+
 write_csv(df_zero, "../results/outputs/qiita_11546_presence_absence.csv")
 
-# Main figures
 ggsave(filename = "../results/figures/main_qiita_11546.jpeg", 
        plot = fig_heat_pair, width = 6.25, height = 5, dpi = 100)
 ggsave(filename = "../results/figures/main_qiita_11546.pdf", 
        plot = fig_heat_pair, width = 6.25, height = 5)
-
-# Supplementary Figures
-ggsave(filename = "../results/figures/supp_qiita_11546_sens.jpeg", 
-       plot = fig_sens, width = 8, height = 8, dpi = 100)
-ggsave(filename = "../results/figures/supp_qiita_11546_sens.pdf", 
-       plot = fig_sens, width = 8, height = 8)
 ```
 
 # Session information

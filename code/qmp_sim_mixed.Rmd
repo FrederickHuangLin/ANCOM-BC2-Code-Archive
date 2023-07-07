@@ -1,5 +1,5 @@
 ---
-title: "Simulations for mixed effects models: quantitative microbiome project data"
+title: "Simulations for Mixed Effects Models: Quantitative Microbiome Project Data"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
   html_document: 

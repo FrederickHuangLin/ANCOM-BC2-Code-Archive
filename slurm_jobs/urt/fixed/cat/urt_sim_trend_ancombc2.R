@@ -155,6 +155,6 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
     c(power1, fdr1, power2, fdr2)
   }
 
-write_csv(data.frame(res_sim), "urt_sim_trend_ancombc2.csv")
-
 stopCluster(cl)
+
+write_csv(data.frame(res_sim), "urt_sim_trend_ancombc2.csv")

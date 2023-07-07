@@ -183,7 +183,6 @@ fig_violin = df_alpha %>%
   labs(x = NULL, y = "Richness") +
   scale_fill_lancet(name = NULL) +
   theme(legend.position = "bottom")
-fig_violin 
 ```
 
 # Run ANCOM-BC2 {.tabset}
@@ -193,10 +192,10 @@ set.seed(123)
 output = ancombc2(data = tse_species, assay_name = "counts", tax_level = "Genus",
                   fix_formula = "ec + highsoilt + aridity",
                   rand_formula = "(1 | host_subject_id)",
-                  p_adj_method = "holm", pseudo = 0, pseudo_sens = TRUE,
+                  p_adj_method = "holm", 
                   prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
                   group = "aridity", struc_zero = TRUE, neg_lb = FALSE,
-                  alpha = 0.05, n_cl = 6, verbose = TRUE,
+                  alpha = 0.05, n_cl = 8, verbose = TRUE,
                   global = FALSE, pairwise = FALSE, dunnet = FALSE, trend = TRUE,
                   iter_control = list(tol = 1e-2, max_iter = 20, 
                                       verbose = TRUE),
@@ -224,12 +223,6 @@ res_trend = output$res_trend %>%
   mutate(genus = strsplit(taxon, "_")[[1]][6]) %>%
   filter(genus != "NA") %>%
   ungroup()
-
-res_pair = output$res_pair %>%
-  rowwise() %>%
-  mutate(genus = strsplit(taxon, "_")[[1]][6]) %>%
-  filter(genus != "NA") %>%
-  ungroup()
 ```
 
 ## Structural zeros
@@ -249,51 +242,6 @@ df_zero = output$zero_ind %>%
   arrange(Arid, Margin)
 ```
 
-## Pseudo-count sensitivity analysis
-
-```{r, fig.width=8, fig.height=8}
-tab_sens = output$pseudo_sens_tab %>%
-  transmute(taxon, sens = `Arid - Margin`) %>%
-  dplyr::right_join(res_pair %>%
-                     transmute(taxon, genus, diff_abn = diff_aridityMargin), 
-                    by = "taxon") %>%
-  mutate(group = "Margin vs. Arid") %>%
-  bind_rows(
-    output$pseudo_sens_tab %>%
-      transmute(taxon, sens = `Arid - Hyperarid`) %>%
-      dplyr::right_join(res_pair %>%
-                          transmute(taxon, genus, diff_abn = diff_aridityHyperarid), 
-                        by = "taxon") %>%
-      mutate(group = "Hyperarid vs. Arid")
-  ) %>%
-  bind_rows(
-    output$pseudo_sens_tab %>%
-      transmute(taxon, sens = `Margin - Hyperarid`) %>%
-      dplyr::right_join(res_pair %>%
-                          transmute(taxon, genus, diff_abn = diff_aridityHyperarid_aridityMargin), by = "taxon") %>%
-      mutate(group = "Hyperarid vs. Margin")
-  )
-
-tab_sens$diff_abn = recode(tab_sens$diff_abn * 1, 
-                           `1` = "Significant",
-                           `0` = "Nonsignificant")
-
-tab_sens$group = factor(tab_sens$group, levels = c("Margin vs. Arid", 
-                                                   "Hyperarid vs. Arid",
-                                                   "Hyperarid vs. Margin"))
-
-fig_sens = tab_sens %>%
-  ggplot(aes(x = genus, y = sens, color = diff_abn)) +
-  facet_grid(rows = vars(group), scales = "free") +
-  geom_point() +
-  scale_color_brewer(palette = "Dark2", name = NULL) +
-  labs(x = NULL, y = "Sensitivity Score") +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 60, vjust = 0.5),
-        legend.position = "top")
-fig_sens
-```
-
 ## Trend test
 
 ```{r, fig.height=4}
@@ -302,8 +250,12 @@ df_fig = res_trend %>%
   transmute(genus, lfc1 = 0, 
             lfc2 = round(lfc_aridityMargin, 2), 
             lfc3 = round(lfc_aridityHyperarid, 2),
-            p_val, q_val,
-            color = ifelse(q_val < 0.05, "tan3", "black")) %>%
+            p_val, q_val, passed_ss, 
+            color = case_when(
+              q_val < 0.05 & passed_ss == TRUE ~ "aquamarine3",
+              q_val < 0.05 & passed_ss == FALSE ~ "tan3",
+              TRUE ~ "black"
+            )) %>%
   pivot_longer(lfc1:lfc3, names_to = "group", values_to = "value") %>%
   arrange(genus)
 df_fig$group = recode(df_fig$group, 
@@ -316,7 +268,7 @@ fig_heat_trend = df_fig %>%
   ggplot(aes(x = group, y = genus, fill = value)) + 
   geom_tile(color = "black") +
   scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
-                       na.value = "white", midpoint = 0, limit = c(-6, 6),
+                       na.value = "white", midpoint = 0, limit = c(-14, 14),
                        name = NULL) +
   geom_text(aes(group, genus, label = value), color = "black", size = 4) +
   labs(x = NULL, y = NULL, title = NULL) +
@@ -325,7 +277,6 @@ fig_heat_trend = df_fig %>%
         axis.text.y = element_text(color = df_fig %>%
                                      distinct(genus, color) %>%
                                      .$color))
-fig_heat_trend
 ```
 
 # Run SECOM {.tabset}
@@ -430,8 +381,6 @@ heat_arid = df_arid %>%
         panel.grid.major = element_blank(),
         axis.ticks = element_blank()) +
   coord_fixed()
-
-heat_arid
 ```
 
 ## Margin
@@ -465,8 +414,6 @@ heat_margin = df_margin %>%
         panel.grid.major = element_blank(),
         axis.ticks = element_blank()) +
   coord_fixed()
-
-heat_margin
 ```
 
 ## Hyperarid
@@ -500,8 +447,6 @@ heat_hyperarid = df_hyperarid %>%
         panel.grid.major = element_blank(),
         axis.ticks = element_blank()) +
   coord_fixed()
-
-heat_hyperarid
 ```
 
 # Outputs
@@ -512,10 +457,6 @@ write_csv(df_alpha, "../results/outputs/qiita_10360_alpha.csv")
 write_csv(res_trend %>%
             arrange(desc(diff_abn)), 
           "../results/outputs/qiita_10360_ancombc2_trend.csv")
-
-write_csv(res_pair %>%
-            arrange(desc(diff_aridityHyperarid_aridityMargin)), 
-          "../results/outputs/qiita_10360_ancombc2_pair.csv")
 
 write_csv(df_zero, "../results/outputs/qiita_10360_presence_absence.csv")
 
@@ -528,11 +469,6 @@ ggsave(filename = "../results/figures/main_qiita_10360.pdf",
        plot = fig_main, width = 10, height = 6)
 
 # Supplementary figures
-ggsave(filename = "../results/figures/supp_qiita_10360_sens.jpeg", 
-       plot = fig_sens, width = 8, height = 8, dpi = 100)
-ggsave(filename = "../results/figures/supp_qiita_10360_sens.pdf", 
-       plot = fig_sens, width = 8, height = 8)
-
 leg = get_legend(heat_arid)
 heat_arid = heat_arid + theme(legend.position = "none")
 heat_margin = heat_margin + theme(legend.position = "none")

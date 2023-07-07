@@ -1,5 +1,5 @@
 ---
-title: "Simulations for fixed effects models: quantitative microbiome project data"
+title: "Simulations for Fixed Effects Models: Quantitative Microbiome Project Data"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
   html_document: 
@@ -1843,7 +1843,7 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
       dplyr::transmute(taxon, 
                        lfc_est1 = lfc_cat_cov2 * diff_cat_cov2 * passed_ss_cat_cov2,
                        lfc_est2 = lfc_cat_cov3 * diff_cat_cov3 * passed_ss_cat_cov3,
-                       lfc_est3 = lfc_cat_cov3_cat_cov2 * diff_cat_cov3_cat_cov2* `passed_ss_cat_cov3 - 2`) %>%
+                       lfc_est3 = lfc_cat_cov3_cat_cov2 * diff_cat_cov3_cat_cov2* passed_ss_ccat_cov3_cat_cov2) %>%
       dplyr::left_join(fmd %>%
                          dplyr::transmute(taxon, 
                                           lfc_true1 = lfc_cat2_vs_1,
@@ -2130,8 +2130,8 @@ stopCluster(cl)
 
 ## Visualization
 
-```{r, fig.height=8, fig.width=10, eval=FALSE}
-df = read_csv("../data/qmp/sim_fixed/cat/qmp_sim_trend_ancombc2.csv")
+```{r, fig.height=8, fig.width=10}
+df_ancombc2 = read_csv("../data/qmp/sim_fixed/cat/qmp_sim_trend_ancombc2.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) %>%
   unite("setting", n:diff_prop, sep = ", ")
@@ -2168,7 +2168,7 @@ fig_fdr_trend = df_fig %>%
   geom_hline(yintercept = 0.05, linetype = "dashed")
 
 fig_trend = ggarrange(fig_fdr_trend, fig_power_trend, 
-                     ncol = 1, common.legend = TRUE)
+                      ncol = 1, common.legend = TRUE)
 
 # Simulation summary
 df_tab = df_fig %>%
@@ -2203,13 +2203,13 @@ ggsave(filename = "../results/figures/supp_qmp_sim_fixed1.jpeg",
 ggsave(filename = "../results/figures/supp_qmp_sim_fixed1.pdf", 
        plot = fig1, width = 10, height = 12)
 
-# fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
-#                  ncol = 1, labels = c("a", "", "b", ""), 
-#                  common.legend = TRUE, legend = "bottom")
-# ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.jpeg", 
-#        plot = fig2, width = 10, height = 10, dpi = 100)
-# ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.pdf", 
-#        plot = fig2, width = 10, height = 10)
+fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
+                 ncol = 1, labels = c("a", "", "b", ""),
+                 common.legend = TRUE, legend = "bottom")
+ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.jpeg",
+       plot = fig2, width = 10, height = 10, dpi = 100)
+ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.pdf",
+       plot = fig2, width = 10, height = 10)
 ```
 
 # Session information

@@ -188,7 +188,7 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
       dplyr::transmute(taxon, 
                        lfc_est1 = lfc_cat_cov2 * diff_cat_cov2 * passed_ss_cat_cov2,
                        lfc_est2 = lfc_cat_cov3 * diff_cat_cov3 * passed_ss_cat_cov3,
-                       lfc_est3 = lfc_cat_cov3_cat_cov2 * diff_cat_cov3_cat_cov2* `passed_ss_cat_cov3 - 2`) %>%
+                       lfc_est3 = lfc_cat_cov3_cat_cov2 * diff_cat_cov3_cat_cov2* passed_ss_cat_cov3_cat_cov2) %>%
       dplyr::left_join(fmd %>%
                          dplyr::transmute(taxon, 
                                           lfc_true1 = lfc_cat2_vs_1,
