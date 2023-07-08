@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-06" />
+<meta name="date" content="2023-07-08" />
 
 <title>Simulations for Fixed Effects Models: Upper Respiratory Tract Microbiome Data</title>
 
@@ -357,7 +357,7 @@ display: none;
 
 <h1 class="title toc-ignore">Simulations for Fixed Effects Models: Upper
 Respiratory Tract Microbiome Data</h1>
-<h4 class="date">July 06, 2023</h4>
+<h4 class="date">July 08, 2023</h4>
 
 </div>
 
@@ -2517,7 +2517,7 @@ stopCluster(cl)</code></pre>
 </div>
 <div id="visualization-4" class="section level2">
 <h2>Visualization</h2>
-<pre class="r"><code>df = read_csv(&quot;../data/urt/sim_fixed/cat/urt_sim_trend_ancombc2.csv&quot;)
+<pre class="r"><code>df_ancombc2 = read_csv(&quot;../data/urt/sim_fixed/cat/urt_sim_trend_ancombc2.csv&quot;)
 
 simpattern = distinct(df_sim_params, n, diff_prop) %&gt;%
   unite(&quot;setting&quot;, n:diff_prop, sep = &quot;, &quot;)
@@ -2588,13 +2588,13 @@ ggsave(filename = &quot;../results/figures/main_urt_sim_fixed1.jpeg&quot;,
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed1.pdf&quot;, 
        plot = fig1, width = 10, height = 12)
 
-# fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
-#                  ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;), 
-#                  common.legend = TRUE, legend = &quot;bottom&quot;)
-# ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.jpeg&quot;, 
-#        plot = fig2, width = 10, height = 10, dpi = 100)
-# ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.pdf&quot;, 
-#        plot = fig2, width = 10, height = 10)</code></pre>
+fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
+                 ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;),
+                 common.legend = TRUE, legend = &quot;bottom&quot;)
+ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.jpeg&quot;,
+       plot = fig2, width = 10, height = 10, dpi = 100)
+ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.pdf&quot;,
+       plot = fig2, width = 10, height = 10)</code></pre>
 </div>
 <div id="session-information" class="section level1">
 <h1>Session information</h1>

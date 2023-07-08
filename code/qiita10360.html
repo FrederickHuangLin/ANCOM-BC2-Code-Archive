@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-06" />
+<meta name="date" content="2023-07-07" />
 
 <title>Real Data Applications: QIITA 10360</title>
 
@@ -356,7 +356,7 @@ display: none;
 
 
 <h1 class="title toc-ignore">Real Data Applications: QIITA 10360</h1>
-<h4 class="date">July 06, 2023</h4>
+<h4 class="date">July 07, 2023</h4>
 
 </div>
 
@@ -725,7 +725,7 @@ output = ancombc2(data = tse_species, assay_name = &quot;counts&quot;, tax_level
                   prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
                   group = &quot;aridity&quot;, struc_zero = TRUE, neg_lb = FALSE,
                   alpha = 0.05, n_cl = 8, verbose = TRUE,
-                  global = FALSE, pairwise = FALSE, dunnet = FALSE, trend = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = TRUE,
                   iter_control = list(tol = 1e-2, max_iter = 20, 
                                       verbose = TRUE),
                   em_control = list(tol = 1e-5, max_iter = 100),
@@ -743,6 +743,12 @@ output = ancombc2(data = tse_species, assay_name = &quot;counts&quot;, tax_level
 
 saveRDS(output, &quot;../data/qiita_10360/qiita_10360_ancombc2.rds&quot;)</code></pre>
 <pre class="r"><code>output = read_rds(file = &quot;../data/qiita_10360/qiita_10360_ancombc2.rds&quot;)
+
+res_pair = output$res_pair %&gt;%
+  rowwise() %&gt;%
+  mutate(genus = strsplit(taxon, &quot;_&quot;)[[1]][6]) %&gt;%
+  filter(genus != &quot;NA&quot;) %&gt;%
+  ungroup()
 
 res_trend = output$res_trend %&gt;%
   rowwise() %&gt;%
@@ -967,6 +973,9 @@ heat_hyperarid = df_hyperarid %&gt;%
 write_csv(res_trend %&gt;%
             arrange(desc(diff_abn)), 
           &quot;../results/outputs/qiita_10360_ancombc2_trend.csv&quot;)
+
+write_csv(res_pair, 
+          &quot;../results/outputs/qiita_10360_ancombc2_pair.csv&quot;)
 
 write_csv(df_zero, &quot;../results/outputs/qiita_10360_presence_absence.csv&quot;)
 

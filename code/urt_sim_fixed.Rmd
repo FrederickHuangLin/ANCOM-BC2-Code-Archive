@@ -2171,8 +2171,8 @@ stopCluster(cl)
 
 ## Visualization
 
-```{r, fig.height=8, fig.width=10, eval=FALSE}
-df = read_csv("../data/urt/sim_fixed/cat/urt_sim_trend_ancombc2.csv")
+```{r, fig.height=8, fig.width=10}
+df_ancombc2 = read_csv("../data/urt/sim_fixed/cat/urt_sim_trend_ancombc2.csv")
 
 simpattern = distinct(df_sim_params, n, diff_prop) %>%
   unite("setting", n:diff_prop, sep = ", ")
@@ -2244,13 +2244,13 @@ ggsave(filename = "../results/figures/main_urt_sim_fixed1.jpeg",
 ggsave(filename = "../results/figures/main_urt_sim_fixed1.pdf", 
        plot = fig1, width = 10, height = 12)
 
-# fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
-#                  ncol = 1, labels = c("a", "", "b", ""), 
-#                  common.legend = TRUE, legend = "bottom")
-# ggsave(filename = "../results/figures/main_urt_sim_fixed2.jpeg", 
-#        plot = fig2, width = 10, height = 10, dpi = 100)
-# ggsave(filename = "../results/figures/main_urt_sim_fixed2.pdf", 
-#        plot = fig2, width = 10, height = 10)
+fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
+                 ncol = 1, labels = c("a", "", "b", ""),
+                 common.legend = TRUE, legend = "bottom")
+ggsave(filename = "../results/figures/main_urt_sim_fixed2.jpeg",
+       plot = fig2, width = 10, height = 10, dpi = 100)
+ggsave(filename = "../results/figures/main_urt_sim_fixed2.pdf",
+       plot = fig2, width = 10, height = 10)
 ```
 
 # Session information

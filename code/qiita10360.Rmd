@@ -196,7 +196,7 @@ output = ancombc2(data = tse_species, assay_name = "counts", tax_level = "Genus"
                   prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
                   group = "aridity", struc_zero = TRUE, neg_lb = FALSE,
                   alpha = 0.05, n_cl = 8, verbose = TRUE,
-                  global = FALSE, pairwise = FALSE, dunnet = FALSE, trend = TRUE,
+                  global = FALSE, pairwise = TRUE, dunnet = FALSE, trend = TRUE,
                   iter_control = list(tol = 1e-2, max_iter = 20, 
                                       verbose = TRUE),
                   em_control = list(tol = 1e-5, max_iter = 100),
@@ -217,6 +217,12 @@ saveRDS(output, "../data/qiita_10360/qiita_10360_ancombc2.rds")
 
 ```{r}
 output = read_rds(file = "../data/qiita_10360/qiita_10360_ancombc2.rds")
+
+res_pair = output$res_pair %>%
+  rowwise() %>%
+  mutate(genus = strsplit(taxon, "_")[[1]][6]) %>%
+  filter(genus != "NA") %>%
+  ungroup()
 
 res_trend = output$res_trend %>%
   rowwise() %>%
@@ -457,6 +463,9 @@ write_csv(df_alpha, "../results/outputs/qiita_10360_alpha.csv")
 write_csv(res_trend %>%
             arrange(desc(diff_abn)), 
           "../results/outputs/qiita_10360_ancombc2_trend.csv")
+
+write_csv(res_pair, 
+          "../results/outputs/qiita_10360_ancombc2_pair.csv")
 
 write_csv(df_zero, "../results/outputs/qiita_10360_presence_absence.csv")
 
