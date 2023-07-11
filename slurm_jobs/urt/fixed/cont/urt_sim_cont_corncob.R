@@ -1,10 +1,10 @@
 library(tidyverse)
-library(mia)
+library(microbiome)
 library(ggpubr)
 library(doRNG)
 library(doParallel)
 library(ANCOMBC)
-library(MicrobiomeStat)
+library(corncob)
 library(LOCOM)
 
 logsumexp = function (x) {
@@ -25,15 +25,14 @@ prevalence = apply(t(throat.otu.table), 1, function(x)
 tax_keep = which(prevalence >= 0.05)
 
 set.seed(12345)
-n = 30
+n = c(10, 20, 30, 50, 100)
 d = length(tax_keep)
-diff_prop = 0.1 # true proportion of DA taxa
-sig_level = seq(0.05, 1, 0.05)
+diff_prop = c(0.05, 0.1, 0.2, 0.5, 0.9) # true proportion of DA taxa
 iter_num = 100
 seed = seq_len(iter_num)
-df_sim_params = data.frame(expand.grid(n, diff_prop, sig_level, seed)) %>%
-  dplyr::rename(n = Var1, diff_prop = Var2, sig_level = Var3, seed = Var4) %>%
-  arrange(n, diff_prop, sig_level, seed)
+df_sim_params = data.frame(expand.grid(n, diff_prop, seed)) %>%
+  dplyr::rename(n = Var1, diff_prop = Var2, seed = Var3) %>%
+  arrange(n, diff_prop, seed)
 list_sim_params = apply(df_sim_params, 1, paste0, collapse = "_")
 
 # Log-fold-changes for the continuous exposure of DA taxa
@@ -59,13 +58,12 @@ cl = makeCluster(12)
 registerDoParallel(cl)
 
 res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
-                  .packages = c("ANCOMBC", "LOCOM", "tidyverse")) %dorng% 
+                  .packages = c("ANCOMBC", "corncob", "tidyverse", "microbiome")) %dorng% 
   {
     params = strsplit(i, "_")[[1]]
     n = as.numeric(params[1])
     diff_prop = as.numeric(params[2])
-    sig_level = as.numeric(params[3])
-    seed = as.numeric(params[4])
+    seed = as.numeric(params[3])
     
     # Generate the true abundances
     set.seed(seed)
@@ -105,51 +103,42 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
     otu_data = otu_data[, idx]
     smd = smd[idx, ]
     
-    otu_table = data.matrix(t(otu_data))
-    Y = smd$cont_cov
-    C = data.matrix(model.matrix(Y ~ smd$bin_cov - 1))[, -1]
+    # Crease the phyloseq object
+    OTU = otu_table(otu_data, taxa_are_rows = TRUE)
+    META = sample_data(smd)
+    sample_names(META) = smd$sample
+    pseq = phyloseq(OTU, META)
     
-    # Run LOCOM
-    suppressWarnings(output <- try(locom(otu.table = otu_table, 
-                                         Y = Y, 
-                                         C = C, 
-                                         fdr.nominal = sig_level, 
-                                         prev.cut = 0.1,
-                                         seed = 123, 
-                                         adjustment = "holm", 
-                                         n.cores = 1),
-                                   silent = TRUE))
-    if (inherits(output, "try-error")) {
-      power = NA; fdr = NA
-    }else{
-      res = data.frame(taxon = colnames(output$p.otu),
-                       lfc_est = as.numeric(signif(output$effect.size, 3)),
-                       q_value = as.numeric(signif(output$q.otu, 3)),
-                       row.names = NULL)
-      res_merge = res %>%
-        dplyr::transmute(taxon, lfc_est = lfc_est * (q_value < sig_level)) %>%
-        dplyr::left_join(fmd %>%
-                           dplyr::transmute(taxon, lfc_true = lfc_cont),
-                         by = "taxon") %>%
-        dplyr::transmute(taxon, 
-                         lfc_est = case_when(lfc_est > 0 ~ 1,
-                                             lfc_est < 0 ~ -1,
-                                             TRUE ~ 0),
-                         lfc_true = case_when(lfc_true > 0 ~ 1,
-                                              lfc_true < 0 ~ -1,
-                                              TRUE ~ 0))
-      lfc_est = res_merge$lfc_est
-      lfc_true = res_merge$lfc_true
-      tp = sum(lfc_true != 0 & lfc_est != 0)
-      fp = sum(lfc_true == 0 & lfc_est != 0)
-      fn = sum(lfc_true != 0 & lfc_est == 0)
-      power = tp/(tp + fn)
-      fdr = fp/(tp + fp)
-    }
+    # Run corncob
+    output = differentialTest(formula = ~ cont_cov + bin_cov,
+                              phi.formula = ~ cont_cov + bin_cov,
+                              formula_null = ~ bin_cov,
+                              phi.formula_null = ~ cont_cov + bin_cov,
+                              test = "Wald", boot = FALSE,
+                              data = pseq,
+                              fdr = "holm",
+                              fdr_cutoff = 0.05)
+    
+    res = data.frame(taxon = output$significant_taxa,
+                     sig_est = 1)
+    res_merge = fmd %>%
+      dplyr::transmute(taxon, sig_true = ifelse(lfc_cont != 0, 1, 0)) %>%
+      dplyr::left_join(
+        res, by = "taxon"
+      ) %>%
+      replace_na(list(sig_est = 0))
+    
+    sig_est = res_merge$sig_est
+    sig_true = res_merge$sig_true
+    tp = sum(sig_true != 0 & sig_est != 0)
+    fp = sum(sig_true == 0 & sig_est != 0)
+    fn = sum(sig_true != 0 & sig_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
     
     c(power, fdr)
   }
 
 stopCluster(cl)
 
-write_csv(data.frame(res_sim), "urt_sim_others_locom.csv")
+write_csv(data.frame(res_sim), "urt_sim_cont_corncob.csv")

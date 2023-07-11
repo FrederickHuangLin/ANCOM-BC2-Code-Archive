@@ -20,6 +20,7 @@ library(doParallel)
 library(magrittr)
 library(qwraps2)
 library(ANCOMBC)
+library(corncob)
 library(MicrobiomeStat)
 library(LOCOM)
 ```
@@ -303,6 +304,99 @@ stopCluster(cl)
 write_csv(data.frame(res_sim), "urt_sim_cont_ancombc.csv")
 ```
 
+## CORNCOB
+
+```{r, eval=FALSE}
+cl = makeCluster(12)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "corncob", "tidyverse", "microbiome")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = throat.otu.table, taxa_are_rows = FALSE, 
+                        prv_cut = 0.05, n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
+      dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+    
+    d = nrow(abn_data) 
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    # Crease the phyloseq object
+    OTU = otu_table(otu_data, taxa_are_rows = TRUE)
+    META = sample_data(smd)
+    sample_names(META) = smd$sample
+    pseq = phyloseq(OTU, META)
+    
+    # Run corncob
+    output = differentialTest(formula = ~ cont_cov + bin_cov,
+                              phi.formula = ~ cont_cov + bin_cov,
+                              formula_null = ~ bin_cov,
+                              phi.formula_null = ~ cont_cov + bin_cov,
+                              test = "Wald", boot = FALSE,
+                              data = pseq,
+                              fdr = "holm",
+                              fdr_cutoff = 0.05)
+    
+    res = data.frame(taxon = output$significant_taxa,
+                     sig_est = 1)
+    res_merge = fmd %>%
+      dplyr::transmute(taxon, sig_true = ifelse(lfc_cont != 0, 1, 0)) %>%
+      dplyr::left_join(
+        res, by = "taxon"
+      ) %>%
+      replace_na(list(sig_est = 0))
+    
+    sig_est = res_merge$sig_est
+    sig_true = res_merge$sig_true
+    tp = sum(sig_true != 0 & sig_est != 0)
+    fp = sum(sig_true == 0 & sig_est != 0)
+    fn = sum(sig_true != 0 & sig_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "urt_sim_cont_corncob.csv")
+```
+
 ## LinDA
 
 ```{r, eval=FALSE}
@@ -504,6 +598,7 @@ write_csv(data.frame(res_sim), "urt_sim_cont_locom.csv")
 ```{r, fig.width=10, fig.height=8}
 df_ancombc2 = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_ancombc2.csv")
 df_ancombc = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_ancombc.csv")
+df_corncob = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_corncob.csv")
 df_linda = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_linda.csv")
 df_locom = read_csv("../data/urt/sim_fixed/cont/urt_sim_cont_locom.csv")
 
@@ -521,6 +616,9 @@ df_ancombc2_ss_filter = df_ancombc2 %>%
 df_ancombc = df_ancombc %>%
   mutate(method = "ANCOM-BC",
          setting = rep(simpattern$setting, each = iter_num))
+df_corncob = df_corncob %>%
+  mutate(method = "CORNCOB",
+         setting = rep(simpattern$setting, each = iter_num))
 df_linda = df_linda %>%
   mutate(method = "LinDA",
          setting = rep(simpattern$setting, each = iter_num))
@@ -531,6 +629,7 @@ df_locom = df_locom %>%
 df_fig = df_ancombc2_no_filter %>%
   bind_rows(df_ancombc2_ss_filter) %>%
   bind_rows(df_ancombc) %>%
+  bind_rows(df_corncob) %>%
   bind_rows(df_linda) %>%
   bind_rows(df_locom) %>%
   separate(setting, c("n", "diff_prop"), ", ") %>%
@@ -538,29 +637,29 @@ df_fig = df_ancombc2_no_filter %>%
          X2 = replace_na(X2, 0))
 df_fig$method = factor(df_fig$method, 
                        levels = c("ANCOM-BC2 (No Filter)", "ANCOM-BC2 (SS Filter)",
-                                  "ANCOM-BC", "LinDA", "LOCOM"))
+                                  "ANCOM-BC", "CORNCOB", "LinDA", "LOCOM"))
 
 fig_power_cont = df_fig %>%
   ggline(x = "n", y = "X1", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "Power", 
+         facet.by = "diff_prop", nrow = 1, 
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_cont = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "FDR", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "FDR", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = "dashed")
 
 fig_cont = ggarrange(fig_fdr_cont, fig_power_cont, 
                      ncol = 1, common.legend = TRUE)
-
-# Extract the hex color codes used in "npg" palette
-hex_code = unique(ggplot_build(fig_power_cont)$data[[1]]$colour)
-# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF"
 
 # Simulation summary
 df_tab = df_fig %>%
@@ -837,6 +936,100 @@ stopCluster(cl)
 write_csv(data.frame(res_sim), "urt_sim_bin_ancombc.csv")
 ```
 
+## CORNCOB
+
+```{r, eval=FALSE}
+cl = makeCluster(12)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c("ANCOMBC", "corncob", "tidyverse", "microbiome")) %dorng% 
+  {
+    params = strsplit(i, "_")[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = throat.otu.table, taxa_are_rows = FALSE, 
+                        prv_cut = 0.05, n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0("T", seq_len(d))
+    colnames(log_abn_data) = paste0("S", seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0("S", seq_len(n)),
+                     samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                       runif(n/2, min = 1e-3, max = 1e-2))),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+    
+    d = nrow(abn_data) 
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0("T", seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    # Crease the phyloseq object
+    OTU = otu_table(otu_data, taxa_are_rows = TRUE)
+    META = sample_data(smd)
+    sample_names(META) = smd$sample
+    pseq = phyloseq(OTU, META)
+    
+    # Run corncob
+    output = differentialTest(formula = ~ cont_cov + bin_cov,
+                              phi.formula = ~ cont_cov + bin_cov,
+                              formula_null = ~ cont_cov,
+                              phi.formula_null = ~ cont_cov + bin_cov,
+                              test = "Wald", boot = FALSE,
+                              data = pseq,
+                              fdr = "holm",
+                              fdr_cutoff = 0.05)
+    
+    res = data.frame(taxon = output$significant_taxa,
+                     sig_est = 1)
+    res_merge = fmd %>%
+      dplyr::transmute(taxon, sig_true = ifelse(lfc_bin != 0, 1, 0)) %>%
+      dplyr::left_join(
+        res, by = "taxon"
+      ) %>%
+      replace_na(list(sig_est = 0))
+    
+    sig_est = res_merge$sig_est
+    sig_true = res_merge$sig_true
+    tp = sum(sig_true != 0 & sig_est != 0)
+    fp = sum(sig_true == 0 & sig_est != 0)
+    fn = sum(sig_true != 0 & sig_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), "urt_sim_bin_corncob.csv")
+```
+
 ## LinDA
 
 ```{r, eval=FALSE}
@@ -1039,6 +1232,7 @@ write_csv(data.frame(res_sim), "urt_sim_bin_locom.csv")
 ```{r, fig.width=10, fig.height=8}
 df_ancombc2 = read_csv("../data/urt/sim_fixed/bin/urt_sim_bin_ancombc2.csv")
 df_ancombc = read_csv("../data/urt/sim_fixed/bin/urt_sim_bin_ancombc.csv")
+df_corncob = read_csv("../data/urt/sim_fixed/bin/urt_sim_bin_corncob.csv")
 df_linda = read_csv("../data/urt/sim_fixed/bin/urt_sim_bin_linda.csv")
 df_locom = read_csv("../data/urt/sim_fixed/bin/urt_sim_bin_locom.csv")
 
@@ -1056,6 +1250,9 @@ df_ancombc2_ss_filter = df_ancombc2 %>%
 df_ancombc = df_ancombc %>%
   mutate(method = "ANCOM-BC",
          setting = rep(simpattern$setting, each = iter_num))
+df_corncob = df_corncob %>%
+  mutate(method = "CORNCOB",
+         setting = rep(simpattern$setting, each = iter_num))
 df_linda = df_linda %>%
   mutate(method = "LinDA",
          setting = rep(simpattern$setting, each = iter_num))
@@ -1066,6 +1263,7 @@ df_locom = df_locom %>%
 df_fig = df_ancombc2_no_filter %>%
   bind_rows(df_ancombc2_ss_filter) %>%
   bind_rows(df_ancombc) %>%
+  bind_rows(df_corncob) %>%
   bind_rows(df_linda) %>%
   bind_rows(df_locom) %>%
   separate(setting, c("n", "diff_prop"), ", ") %>%
@@ -1073,19 +1271,23 @@ df_fig = df_ancombc2_no_filter %>%
          X2 = replace_na(X2, 0))
 df_fig$method = factor(df_fig$method, 
                        levels = c("ANCOM-BC2 (No Filter)", "ANCOM-BC2 (SS Filter)", 
-                                  "ANCOM-BC", "LinDA", "LOCOM"))
+                                  "ANCOM-BC", "CORNCOB", "LinDA", "LOCOM"))
 
 fig_power_bin = df_fig %>%
   ggline(x = "n", y = "X1", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "Power", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_bin = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "FDR", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "FDR", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = "dashed")
@@ -1640,17 +1842,25 @@ df_fig$method = factor(df_fig$method,
                                   "ANCOM-BC2 (SS Filter)", 
                                   "ANCOM-BC", "LinDA"))
 
+# ggsci::pal_npg("nrc")(10)
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" 
+# "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
 fig_power_dunn = df_fig %>%
   ggline(x = "n", y = "X1", add = "mean_se",
-         color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+         color = "method", xlab = "Sample Size", ylab = "Power", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.2, point.size = 0.1) +
+  scale_color_manual(values = c("#E64B35FF", "#4DBBD5FF", "#00A087FF", "#F39B7FFF")) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_dunn = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
-         color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "mdFDR", facet.by = "diff_prop", nrow = 1) +
+         color = "method", xlab = "Sample Size", ylab = "mdFDR", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.2, point.size = 0.1) +
+  scale_color_manual(values = c("#E64B35FF", "#4DBBD5FF", "#00A087FF", "#F39B7FFF")) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = "dashed")
@@ -1972,14 +2182,18 @@ df_fig$method = factor(df_fig$method,
 fig_power_pair = df_fig %>%
   ggline(x = "n", y = "X1", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "Power", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_pair = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "mdFDR", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "mdFDR", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = "dashed")
@@ -2196,14 +2410,18 @@ df_fig$method = factor(df_fig$method,
 fig_power_trend = df_fig %>%
   ggline(x = "n", y = "X1", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "Power", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "Power", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_trend = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "mdFDR", facet.by = "diff_prop", nrow = 1) +
+         xlab = "Sample Size", ylab = "mdFDR", 
+         facet.by = "diff_prop", nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = "dashed")
@@ -2240,17 +2458,17 @@ fig1 = ggarrange(fig_fdr_cont, fig_power_cont,
                  ncol = 1, labels = c("a", "", "b", "", "c", ""), 
                  common.legend = TRUE, legend = "bottom")
 ggsave(filename = "../results/figures/main_urt_sim_fixed1.jpeg", 
-       plot = fig1, width = 10, height = 12, dpi = 100)
+       plot = fig1, width = 12, height = 14, dpi = 100)
 ggsave(filename = "../results/figures/main_urt_sim_fixed1.pdf", 
-       plot = fig1, width = 10, height = 12)
+       plot = fig1, width = 12, height = 14)
 
 fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
                  ncol = 1, labels = c("a", "", "b", ""),
                  common.legend = TRUE, legend = "bottom")
 ggsave(filename = "../results/figures/main_urt_sim_fixed2.jpeg",
-       plot = fig2, width = 10, height = 10, dpi = 100)
+       plot = fig2, width = 12, height = 12, dpi = 100)
 ggsave(filename = "../results/figures/main_urt_sim_fixed2.pdf",
-       plot = fig2, width = 10, height = 10)
+       plot = fig2, width = 12, height = 12)
 ```
 
 # Session information

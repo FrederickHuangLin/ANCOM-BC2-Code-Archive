@@ -55,11 +55,11 @@ for (i in seq_along(diff_prop)) {
 }
 names(lfc_bin_list) = diff_prop
 
-cl = makeCluster(16)
+cl = makeCluster(12)
 registerDoParallel(cl)
 
 res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
-                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+                  .packages = c("ANCOMBC", "LOCOM", "tidyverse")) %dorng% 
   {
     params = strsplit(i, "_")[[1]]
     n = as.numeric(params[1])
@@ -100,71 +100,56 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
     log_otu_data = log_otu_data + fmd$seq_eff
     otu_data = round(exp(log_otu_data))
     
-    # Create the tse object
-    assays = S4Vectors::SimpleList(counts = otu_data)
-    smd = S4Vectors::DataFrame(smd)
-    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
     
-    # Run ANCOM-BC2
-    set.seed(123)
-    output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
-                      fix_formula = "cont_cov + bin_cov", rand_formula = NULL,
-                      p_adj_method = "holm", 
-                      prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
-                      group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE,
-                      alpha = sig_level, n_cl = 1, verbose = FALSE,
-                      global = FALSE, pairwise = FALSE, 
-                      dunnet = FALSE, trend = FALSE,
-                      iter_control = list(tol = 1e-5, max_iter = 20, 
-                                          verbose = FALSE),
-                      em_control = list(tol = 1e-5, max_iter = 100),
-                      lme_control = NULL, mdfdr_control = NULL, 
-                      trend_control = NULL)
+    otu_table = data.matrix(t(otu_data))
+    Y = smd$cont_cov
+    C = data.matrix(model.matrix(Y ~ smd$bin_cov - 1))[, -1]
     
-    res_prim = output$res
-    res_merge1 = res_prim %>%
-      dplyr::transmute(taxon, lfc_est = lfc_cont_cov * diff_cont_cov) %>%
-      dplyr::left_join(fmd %>%
-                         dplyr::transmute(taxon, lfc_true = lfc_cont),
-                       by = "taxon") %>%
-      dplyr::transmute(taxon, 
-                       lfc_est = case_when(lfc_est > 0 ~ 1,
-                                           lfc_est < 0 ~ -1,
-                                           TRUE ~ 0),
-                       lfc_true = case_when(lfc_true > 0 ~ 1,
-                                            lfc_true < 0 ~ -1,
-                                            TRUE ~ 0))
-    res_merge2 = res_prim %>%
-      dplyr::transmute(taxon, lfc_est = lfc_cont_cov * diff_cont_cov * passed_ss_cont_cov) %>%
-      dplyr::left_join(fmd %>%
-                         dplyr::transmute(taxon, lfc_true = lfc_cont),
-                       by = "taxon") %>%
-      dplyr::transmute(taxon, 
-                       lfc_est = case_when(lfc_est > 0 ~ 1,
-                                           lfc_est < 0 ~ -1,
-                                           TRUE ~ 0),
-                       lfc_true = case_when(lfc_true > 0 ~ 1,
-                                            lfc_true < 0 ~ -1,
-                                            TRUE ~ 0))
-    lfc_est = res_merge1$lfc_est
-    lfc_true = res_merge1$lfc_true
-    tp = sum(lfc_true != 0 & lfc_est != 0)
-    fp = sum(lfc_true == 0 & lfc_est != 0)
-    fn = sum(lfc_true != 0 & lfc_est == 0)
-    power1 = tp/(tp + fn)
-    fdr1 = fp/(tp + fp)
+    # Run LOCOM
+    suppressWarnings(output <- try(locom(otu.table = otu_table, 
+                                         Y = Y, 
+                                         C = C, 
+                                         fdr.nominal = sig_level, 
+                                         prev.cut = 0.1,
+                                         seed = 123, 
+                                         adjustment = "holm", 
+                                         n.cores = 1),
+                                   silent = TRUE))
+    if (inherits(output, "try-error")) {
+      power = NA; fdr = NA
+    }else{
+      res = data.frame(taxon = colnames(output$p.otu),
+                       lfc_est = as.numeric(signif(output$effect.size, 3)),
+                       q_value = as.numeric(signif(output$q.otu, 3)),
+                       row.names = NULL)
+      res_merge = res %>%
+        dplyr::transmute(taxon, lfc_est = lfc_est * (q_value < sig_level)) %>%
+        dplyr::left_join(fmd %>%
+                           dplyr::transmute(taxon, lfc_true = lfc_cont),
+                         by = "taxon") %>%
+        dplyr::transmute(taxon, 
+                         lfc_est = case_when(lfc_est > 0 ~ 1,
+                                             lfc_est < 0 ~ -1,
+                                             TRUE ~ 0),
+                         lfc_true = case_when(lfc_true > 0 ~ 1,
+                                              lfc_true < 0 ~ -1,
+                                              TRUE ~ 0))
+      lfc_est = res_merge$lfc_est
+      lfc_true = res_merge$lfc_true
+      tp = sum(lfc_true != 0 & lfc_est != 0)
+      fp = sum(lfc_true == 0 & lfc_est != 0)
+      fn = sum(lfc_true != 0 & lfc_est == 0)
+      power = tp/(tp + fn)
+      fdr = fp/(tp + fp)
+    }
     
-    lfc_est = res_merge2$lfc_est
-    lfc_true = res_merge2$lfc_true
-    tp = sum(lfc_true != 0 & lfc_est != 0)
-    fp = sum(lfc_true == 0 & lfc_est != 0)
-    fn = sum(lfc_true != 0 & lfc_est == 0)
-    power2 = tp/(tp + fn)
-    fdr2 = fp/(tp + fp)
-    
-    c(power1, fdr1, power2, fdr2)
+    c(power, fdr)
   }
 
 stopCluster(cl)
 
-write_csv(data.frame(res_sim), "urt_sim_others_ancombc2.csv")
+write_csv(data.frame(res_sim), "others_sim_locom.csv")

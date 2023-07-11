@@ -1,10 +1,10 @@
 library(tidyverse)
-library(mia)
+library(microbiome)
 library(ggpubr)
 library(doRNG)
 library(doParallel)
 library(ANCOMBC)
-library(MicrobiomeStat)
+library(corncob)
 library(LOCOM)
 
 logsumexp = function (x) {
@@ -55,11 +55,11 @@ for (i in seq_along(diff_prop)) {
 }
 names(lfc_bin_list) = diff_prop
 
-cl = makeCluster(8)
+cl = makeCluster(12)
 registerDoParallel(cl)
 
 res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
-                  .packages = c("ANCOMBC", "tidyverse")) %dorng% 
+                  .packages = c("ANCOMBC", "corncob", "tidyverse", "microbiome")) %dorng% 
   {
     params = strsplit(i, "_")[[1]]
     n = as.numeric(params[1])
@@ -100,43 +100,41 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
     log_otu_data = log_otu_data + fmd$seq_eff
     otu_data = round(exp(log_otu_data))
     
-    # Create the tse object
-    assays = S4Vectors::SimpleList(counts = otu_data)
-    smd = S4Vectors::DataFrame(smd)
-    tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) > 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
     
-    # Run ANCOM-BC
-    set.seed(123)
-    output = ancombc(data = tse, assay_name = "counts", 
-                     tax_level = NULL, phyloseq = NULL, 
-                     formula = "cont_cov + bin_cov", 
-                     p_adj_method = "holm", prv_cut = 0.10, lib_cut = 1000, 
-                     group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
-                     max_iter = 100, conserve = TRUE, alpha = sig_level, global = FALSE,
-                     n_cl = 1, verbose = FALSE)
+    # Crease the phyloseq object
+    OTU = otu_table(otu_data, taxa_are_rows = TRUE)
+    META = sample_data(smd)
+    sample_names(META) = smd$sample
+    pseq = phyloseq(OTU, META)
     
-    res_prim = output$res
-    res_merge = res_prim$lfc %>%
-      dplyr::transmute(taxon, lfc_est = cont_cov) %>%
-      dplyr::left_join(res_prim$diff_abn %>%
-                         dplyr::transmute(taxon, diff = cont_cov),
-                       by = "taxon") %>%
-      dplyr::left_join(fmd %>%
-                         dplyr::transmute(taxon, lfc_true = lfc_cont),
-                       by = "taxon") %>%
-      dplyr::transmute(taxon, 
-                       lfc_est = lfc_est * diff,
-                       lfc_est = case_when(lfc_est > 0 ~ 1,
-                                           lfc_est < 0 ~ -1,
-                                           TRUE ~ 0),
-                       lfc_true = case_when(lfc_true > 0 ~ 1,
-                                            lfc_true < 0 ~ -1,
-                                            TRUE ~ 0))
-    lfc_est = res_merge$lfc_est
-    lfc_true = res_merge$lfc_true
-    tp = sum(lfc_true != 0 & lfc_est != 0)
-    fp = sum(lfc_true == 0 & lfc_est != 0)
-    fn = sum(lfc_true != 0 & lfc_est == 0)
+    # Run corncob
+    output = differentialTest(formula = ~ cont_cov + bin_cov,
+                              phi.formula = ~ cont_cov + bin_cov,
+                              formula_null = ~ bin_cov,
+                              phi.formula_null = ~ cont_cov + bin_cov,
+                              test = "Wald", boot = FALSE,
+                              data = pseq,
+                              fdr = "holm",
+                              fdr_cutoff = sig_level)
+    
+    res = data.frame(taxon = output$significant_taxa,
+                     sig_est = 1)
+    res_merge = fmd %>%
+      dplyr::transmute(taxon, sig_true = ifelse(lfc_cont != 0, 1, 0)) %>%
+      dplyr::left_join(
+        res, by = "taxon"
+      ) %>%
+      replace_na(list(sig_est = 0))
+    
+    sig_est = res_merge$sig_est
+    sig_true = res_merge$sig_true
+    tp = sum(sig_true != 0 & sig_est != 0)
+    fp = sum(sig_true == 0 & sig_est != 0)
+    fn = sum(sig_true != 0 & sig_est == 0)
     power = tp/(tp + fn)
     fdr = fp/(tp + fp)
     
@@ -145,4 +143,4 @@ res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE,
 
 stopCluster(cl)
 
-write_csv(data.frame(res_sim), "urt_sim_others_ancombc.csv")
+write_csv(data.frame(res_sim), "others_sim_corncob.csv")

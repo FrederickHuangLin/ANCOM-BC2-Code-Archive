@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-08" />
+<meta name="date" content="2023-07-10" />
 
 <title>Simulations for Fixed Effects Models: Upper Respiratory Tract Microbiome Data</title>
 
@@ -357,7 +357,7 @@ display: none;
 
 <h1 class="title toc-ignore">Simulations for Fixed Effects Models: Upper
 Respiratory Tract Microbiome Data</h1>
-<h4 class="date">July 08, 2023</h4>
+<h4 class="date">July 10, 2023</h4>
 
 </div>
 
@@ -368,6 +368,7 @@ continuous exposure</a>
 <ul>
 <li><a href="#ancom-bc2" id="toc-ancom-bc2">ANCOM-BC2</a></li>
 <li><a href="#ancom-bc" id="toc-ancom-bc">ANCOM-BC</a></li>
+<li><a href="#corncob" id="toc-corncob">CORNCOB</a></li>
 <li><a href="#linda" id="toc-linda">LinDA</a></li>
 <li><a href="#locom" id="toc-locom">LOCOM</a></li>
 <li><a href="#visualization" id="toc-visualization">Visualization</a></li>
@@ -377,6 +378,7 @@ exposure</a>
 <ul>
 <li><a href="#ancom-bc2-1" id="toc-ancom-bc2-1">ANCOM-BC2</a></li>
 <li><a href="#ancom-bc-1" id="toc-ancom-bc-1">ANCOM-BC</a></li>
+<li><a href="#corncob-1" id="toc-corncob-1">CORNCOB</a></li>
 <li><a href="#linda-1" id="toc-linda-1">LinDA</a></li>
 <li><a href="#locom-1" id="toc-locom-1">LOCOM</a></li>
 <li><a href="#visualization-1" id="toc-visualization-1">Visualization</a></li>
@@ -418,6 +420,7 @@ library(doParallel)
 library(magrittr)
 library(qwraps2)
 library(ANCOMBC)
+library(corncob)
 library(MicrobiomeStat)
 library(LOCOM)</code></pre>
 <pre class="r"><code>logsumexp = function (x) {
@@ -688,6 +691,97 @@ stopCluster(cl)
 
 write_csv(data.frame(res_sim), &quot;urt_sim_cont_ancombc.csv&quot;)</code></pre>
 </div>
+<div id="corncob" class="section level2">
+<h2>CORNCOB</h2>
+<pre class="r"><code>cl = makeCluster(12)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c(&quot;ANCOMBC&quot;, &quot;corncob&quot;, &quot;tidyverse&quot;, &quot;microbiome&quot;)) %dorng% 
+  {
+    params = strsplit(i, &quot;_&quot;)[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = throat.otu.table, taxa_are_rows = FALSE, 
+                        prv_cut = 0.05, n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0(&quot;T&quot;, seq_len(d))
+    colnames(log_abn_data) = paste0(&quot;S&quot;, seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0(&quot;S&quot;, seq_len(n)),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2))) %&gt;%
+      dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
+    
+    d = nrow(abn_data) 
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0(&quot;T&quot;, seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, &quot;cont_cov&quot;] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, &quot;bin_cov2&quot;])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) &gt; 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    # Crease the phyloseq object
+    OTU = otu_table(otu_data, taxa_are_rows = TRUE)
+    META = sample_data(smd)
+    sample_names(META) = smd$sample
+    pseq = phyloseq(OTU, META)
+    
+    # Run corncob
+    output = differentialTest(formula = ~ cont_cov + bin_cov,
+                              phi.formula = ~ cont_cov + bin_cov,
+                              formula_null = ~ bin_cov,
+                              phi.formula_null = ~ cont_cov + bin_cov,
+                              test = &quot;Wald&quot;, boot = FALSE,
+                              data = pseq,
+                              fdr = &quot;holm&quot;,
+                              fdr_cutoff = 0.05)
+    
+    res = data.frame(taxon = output$significant_taxa,
+                     sig_est = 1)
+    res_merge = fmd %&gt;%
+      dplyr::transmute(taxon, sig_true = ifelse(lfc_cont != 0, 1, 0)) %&gt;%
+      dplyr::left_join(
+        res, by = &quot;taxon&quot;
+      ) %&gt;%
+      replace_na(list(sig_est = 0))
+    
+    sig_est = res_merge$sig_est
+    sig_true = res_merge$sig_true
+    tp = sum(sig_true != 0 &amp; sig_est != 0)
+    fp = sum(sig_true == 0 &amp; sig_est != 0)
+    fn = sum(sig_true != 0 &amp; sig_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), &quot;urt_sim_cont_corncob.csv&quot;)</code></pre>
+</div>
 <div id="linda" class="section level2">
 <h2>LinDA</h2>
 <pre class="r"><code>cl = makeCluster(2)
@@ -884,6 +978,7 @@ write_csv(data.frame(res_sim), &quot;urt_sim_cont_locom.csv&quot;)</code></pre>
 <h2>Visualization</h2>
 <pre class="r"><code>df_ancombc2 = read_csv(&quot;../data/urt/sim_fixed/cont/urt_sim_cont_ancombc2.csv&quot;)
 df_ancombc = read_csv(&quot;../data/urt/sim_fixed/cont/urt_sim_cont_ancombc.csv&quot;)
+df_corncob = read_csv(&quot;../data/urt/sim_fixed/cont/urt_sim_cont_corncob.csv&quot;)
 df_linda = read_csv(&quot;../data/urt/sim_fixed/cont/urt_sim_cont_linda.csv&quot;)
 df_locom = read_csv(&quot;../data/urt/sim_fixed/cont/urt_sim_cont_locom.csv&quot;)
 
@@ -901,6 +996,9 @@ df_ancombc2_ss_filter = df_ancombc2 %&gt;%
 df_ancombc = df_ancombc %&gt;%
   mutate(method = &quot;ANCOM-BC&quot;,
          setting = rep(simpattern$setting, each = iter_num))
+df_corncob = df_corncob %&gt;%
+  mutate(method = &quot;CORNCOB&quot;,
+         setting = rep(simpattern$setting, each = iter_num))
 df_linda = df_linda %&gt;%
   mutate(method = &quot;LinDA&quot;,
          setting = rep(simpattern$setting, each = iter_num))
@@ -911,6 +1009,7 @@ df_locom = df_locom %&gt;%
 df_fig = df_ancombc2_no_filter %&gt;%
   bind_rows(df_ancombc2_ss_filter) %&gt;%
   bind_rows(df_ancombc) %&gt;%
+  bind_rows(df_corncob) %&gt;%
   bind_rows(df_linda) %&gt;%
   bind_rows(df_locom) %&gt;%
   separate(setting, c(&quot;n&quot;, &quot;diff_prop&quot;), &quot;, &quot;) %&gt;%
@@ -918,29 +1017,29 @@ df_fig = df_ancombc2_no_filter %&gt;%
          X2 = replace_na(X2, 0))
 df_fig$method = factor(df_fig$method, 
                        levels = c(&quot;ANCOM-BC2 (No Filter)&quot;, &quot;ANCOM-BC2 (SS Filter)&quot;,
-                                  &quot;ANCOM-BC&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;))
+                                  &quot;ANCOM-BC&quot;, &quot;CORNCOB&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;))
 
 fig_power_cont = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X1&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1, 
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_cont = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X2&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;FDR&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;FDR&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = &quot;dashed&quot;)
 
 fig_cont = ggarrange(fig_fdr_cont, fig_power_cont, 
                      ncol = 1, common.legend = TRUE)
-
-# Extract the hex color codes used in &quot;npg&quot; palette
-hex_code = unique(ggplot_build(fig_power_cont)$data[[1]]$colour)
-# &quot;#E64B35FF&quot; &quot;#4DBBD5FF&quot; &quot;#00A087FF&quot; &quot;#3C5488FF&quot; &quot;#F39B7FFF&quot;
 
 # Simulation summary
 df_tab = df_fig %&gt;%
@@ -1209,6 +1308,98 @@ stopCluster(cl)
 
 write_csv(data.frame(res_sim), &quot;urt_sim_bin_ancombc.csv&quot;)</code></pre>
 </div>
+<div id="corncob-1" class="section level2">
+<h2>CORNCOB</h2>
+<pre class="r"><code>cl = makeCluster(12)
+registerDoParallel(cl)
+
+res_sim = foreach(i = list_sim_params, .combine = rbind, .verbose = TRUE, 
+                  .packages = c(&quot;ANCOMBC&quot;, &quot;corncob&quot;, &quot;tidyverse&quot;, &quot;microbiome&quot;)) %dorng% 
+  {
+    params = strsplit(i, &quot;_&quot;)[[1]]
+    n = as.numeric(params[1])
+    diff_prop = as.numeric(params[2])
+    seed = as.numeric(params[3])
+    
+    # Generate the true abundances
+    set.seed(seed)
+    abn_data = sim_plnm(abn_table = throat.otu.table, taxa_are_rows = FALSE, 
+                        prv_cut = 0.05, n = n, lib_mean = 1e8, disp = 0.5)
+    log_abn_data = log(abn_data + 1e-5)
+    rownames(log_abn_data) = paste0(&quot;T&quot;, seq_len(d))
+    colnames(log_abn_data) = paste0(&quot;S&quot;, seq_len(n))
+    
+    # Generate the sample and feature meta data
+    # Sampling fractions are set to differ by the variable of interest
+    smd = data.frame(sample = paste0(&quot;S&quot;, seq_len(n)),
+                     samp_frac = log(c(runif(n/2, min = 1e-4, max = 1e-3),
+                                       runif(n/2, min = 1e-3, max = 1e-2))),
+                     cont_cov = rnorm(n),
+                     bin_cov = as.factor(rep(seq_len(2), each = n/2)))
+    
+    d = nrow(abn_data) 
+    lfc_bin = lfc_bin_list[[as.character(diff_prop)]]
+    lfc_cont = lfc_cont_list[[as.character(diff_prop)]]
+    fmd = data.frame(taxon = paste0(&quot;T&quot;, seq_len(d)),
+                     seq_eff = log(runif(d, min = 0.1, max = 1)),
+                     lfc_cont = lfc_cont,
+                     lfc_bin = lfc_bin)
+    
+    # Add effect sizes of covariates to the true abundances
+    smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
+    log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, &quot;cont_cov&quot;] )
+    log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, &quot;bin_cov2&quot;])
+    
+    # Add sample- and taxon-specific biases
+    log_otu_data = t(t(log_abn_data) + smd$samp_frac)
+    log_otu_data = log_otu_data + fmd$seq_eff
+    otu_data = round(exp(log_otu_data))
+    
+    # Remove samples with low library sizes
+    idx = which(colSums(otu_data) &gt; 1000)
+    otu_data = otu_data[, idx]
+    smd = smd[idx, ]
+    
+    # Crease the phyloseq object
+    OTU = otu_table(otu_data, taxa_are_rows = TRUE)
+    META = sample_data(smd)
+    sample_names(META) = smd$sample
+    pseq = phyloseq(OTU, META)
+    
+    # Run corncob
+    output = differentialTest(formula = ~ cont_cov + bin_cov,
+                              phi.formula = ~ cont_cov + bin_cov,
+                              formula_null = ~ cont_cov,
+                              phi.formula_null = ~ cont_cov + bin_cov,
+                              test = &quot;Wald&quot;, boot = FALSE,
+                              data = pseq,
+                              fdr = &quot;holm&quot;,
+                              fdr_cutoff = 0.05)
+    
+    res = data.frame(taxon = output$significant_taxa,
+                     sig_est = 1)
+    res_merge = fmd %&gt;%
+      dplyr::transmute(taxon, sig_true = ifelse(lfc_bin != 0, 1, 0)) %&gt;%
+      dplyr::left_join(
+        res, by = &quot;taxon&quot;
+      ) %&gt;%
+      replace_na(list(sig_est = 0))
+    
+    sig_est = res_merge$sig_est
+    sig_true = res_merge$sig_true
+    tp = sum(sig_true != 0 &amp; sig_est != 0)
+    fp = sum(sig_true == 0 &amp; sig_est != 0)
+    fn = sum(sig_true != 0 &amp; sig_est == 0)
+    power = tp/(tp + fn)
+    fdr = fp/(tp + fp)
+    
+    c(power, fdr)
+  }
+
+stopCluster(cl)
+
+write_csv(data.frame(res_sim), &quot;urt_sim_bin_corncob.csv&quot;)</code></pre>
+</div>
 <div id="linda-1" class="section level2">
 <h2>LinDA</h2>
 <pre class="r"><code>cl = makeCluster(2)
@@ -1406,6 +1597,7 @@ write_csv(data.frame(res_sim), &quot;urt_sim_bin_locom.csv&quot;)</code></pre>
 <h2>Visualization</h2>
 <pre class="r"><code>df_ancombc2 = read_csv(&quot;../data/urt/sim_fixed/bin/urt_sim_bin_ancombc2.csv&quot;)
 df_ancombc = read_csv(&quot;../data/urt/sim_fixed/bin/urt_sim_bin_ancombc.csv&quot;)
+df_corncob = read_csv(&quot;../data/urt/sim_fixed/bin/urt_sim_bin_corncob.csv&quot;)
 df_linda = read_csv(&quot;../data/urt/sim_fixed/bin/urt_sim_bin_linda.csv&quot;)
 df_locom = read_csv(&quot;../data/urt/sim_fixed/bin/urt_sim_bin_locom.csv&quot;)
 
@@ -1423,6 +1615,9 @@ df_ancombc2_ss_filter = df_ancombc2 %&gt;%
 df_ancombc = df_ancombc %&gt;%
   mutate(method = &quot;ANCOM-BC&quot;,
          setting = rep(simpattern$setting, each = iter_num))
+df_corncob = df_corncob %&gt;%
+  mutate(method = &quot;CORNCOB&quot;,
+         setting = rep(simpattern$setting, each = iter_num))
 df_linda = df_linda %&gt;%
   mutate(method = &quot;LinDA&quot;,
          setting = rep(simpattern$setting, each = iter_num))
@@ -1433,6 +1628,7 @@ df_locom = df_locom %&gt;%
 df_fig = df_ancombc2_no_filter %&gt;%
   bind_rows(df_ancombc2_ss_filter) %&gt;%
   bind_rows(df_ancombc) %&gt;%
+  bind_rows(df_corncob) %&gt;%
   bind_rows(df_linda) %&gt;%
   bind_rows(df_locom) %&gt;%
   separate(setting, c(&quot;n&quot;, &quot;diff_prop&quot;), &quot;, &quot;) %&gt;%
@@ -1440,19 +1636,23 @@ df_fig = df_ancombc2_no_filter %&gt;%
          X2 = replace_na(X2, 0))
 df_fig$method = factor(df_fig$method, 
                        levels = c(&quot;ANCOM-BC2 (No Filter)&quot;, &quot;ANCOM-BC2 (SS Filter)&quot;, 
-                                  &quot;ANCOM-BC&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;))
+                                  &quot;ANCOM-BC&quot;, &quot;CORNCOB&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;))
 
 fig_power_bin = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X1&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_bin = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X2&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;FDR&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;FDR&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.2, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = &quot;dashed&quot;)
@@ -1997,17 +2197,25 @@ df_fig$method = factor(df_fig$method,
                                   &quot;ANCOM-BC2 (SS Filter)&quot;, 
                                   &quot;ANCOM-BC&quot;, &quot;LinDA&quot;))
 
+# ggsci::pal_npg(&quot;nrc&quot;)(10)
+# &quot;#E64B35FF&quot; &quot;#4DBBD5FF&quot; &quot;#00A087FF&quot; &quot;#3C5488FF&quot; &quot;#F39B7FFF&quot; 
+# &quot;#8491B4FF&quot; &quot;#91D1C2FF&quot; &quot;#DC0000FF&quot; &quot;#7E6148FF&quot; &quot;#B09C85FF&quot;
+
 fig_power_dunn = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X1&quot;, add = &quot;mean_se&quot;,
-         color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         color = &quot;method&quot;, xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.2, point.size = 0.1) +
+  scale_color_manual(values = c(&quot;#E64B35FF&quot;, &quot;#4DBBD5FF&quot;, &quot;#00A087FF&quot;, &quot;#F39B7FFF&quot;)) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_dunn = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X2&quot;, add = &quot;mean_se&quot;,
-         color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;mdFDR&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         color = &quot;method&quot;, xlab = &quot;Sample Size&quot;, ylab = &quot;mdFDR&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.2, point.size = 0.1) +
+  scale_color_manual(values = c(&quot;#E64B35FF&quot;, &quot;#4DBBD5FF&quot;, &quot;#00A087FF&quot;, &quot;#F39B7FFF&quot;)) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = &quot;dashed&quot;)
@@ -2323,14 +2531,18 @@ df_fig$method = factor(df_fig$method,
 fig_power_pair = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X1&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_pair = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X2&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;mdFDR&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;mdFDR&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = &quot;dashed&quot;)
@@ -2541,14 +2753,18 @@ df_fig$method = factor(df_fig$method,
 fig_power_trend = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X1&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;Power&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL))
 
 fig_fdr_trend = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X2&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;mdFDR&quot;, facet.by = &quot;diff_prop&quot;, nrow = 1) +
+         xlab = &quot;Sample Size&quot;, ylab = &quot;mdFDR&quot;, 
+         facet.by = &quot;diff_prop&quot;, nrow = 1,
+         size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
   geom_hline(yintercept = 0.05, linetype = &quot;dashed&quot;)
@@ -2584,17 +2800,17 @@ fig1 = ggarrange(fig_fdr_cont, fig_power_cont,
                  ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;, &quot;c&quot;, &quot;&quot;), 
                  common.legend = TRUE, legend = &quot;bottom&quot;)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed1.jpeg&quot;, 
-       plot = fig1, width = 10, height = 12, dpi = 100)
+       plot = fig1, width = 12, height = 14, dpi = 100)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed1.pdf&quot;, 
-       plot = fig1, width = 10, height = 12)
+       plot = fig1, width = 12, height = 14)
 
 fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
                  ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;),
                  common.legend = TRUE, legend = &quot;bottom&quot;)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.jpeg&quot;,
-       plot = fig2, width = 10, height = 10, dpi = 100)
+       plot = fig2, width = 12, height = 12, dpi = 100)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.pdf&quot;,
-       plot = fig2, width = 10, height = 10)</code></pre>
+       plot = fig2, width = 12, height = 12)</code></pre>
 </div>
 <div id="session-information" class="section level1">
 <h1>Session information</h1>
@@ -2617,24 +2833,24 @@ attached base packages:
 other attached packages:
  [1] LOCOM_1.1                      permute_0.9-7                 
  [3] psych_2.2.9                    metap_1.8                     
- [5] MicrobiomeStat_1.1             ANCOMBC_2.2.1                 
- [7] qwraps2_0.5.2                  magrittr_2.0.3                
- [9] doParallel_1.0.17              iterators_1.0.14              
-[11] doRNG_1.8.3                    rngtools_1.5.2                
-[13] foreach_1.5.2                  ggpubr_0.5.0                  
-[15] mia_1.6.0                      MultiAssayExperiment_1.24.0   
-[17] TreeSummarizedExperiment_2.6.0 Biostrings_2.66.0             
-[19] XVector_0.38.0                 SingleCellExperiment_1.20.0   
-[21] SummarizedExperiment_1.28.0    Biobase_2.58.0                
-[23] GenomicRanges_1.50.2           GenomeInfoDb_1.34.5           
-[25] IRanges_2.32.0                 S4Vectors_0.36.1              
-[27] BiocGenerics_0.44.0            MatrixGenerics_1.10.0         
-[29] matrixStats_0.63.0             forcats_0.5.2                 
-[31] stringr_1.5.0                  dplyr_1.0.10                  
-[33] purrr_1.0.0                    readr_2.1.3                   
-[35] tidyr_1.2.1                    tibble_3.1.8                  
-[37] ggplot2_3.4.0                  tidyverse_1.3.2               
-[39] openxlsx_4.2.5.1              
+ [5] MicrobiomeStat_1.1             corncob_0.3.1                 
+ [7] ANCOMBC_2.2.1                  qwraps2_0.5.2                 
+ [9] magrittr_2.0.3                 doParallel_1.0.17             
+[11] iterators_1.0.14               doRNG_1.8.3                   
+[13] rngtools_1.5.2                 foreach_1.5.2                 
+[15] ggpubr_0.5.0                   mia_1.6.0                     
+[17] MultiAssayExperiment_1.24.0    TreeSummarizedExperiment_2.6.0
+[19] Biostrings_2.66.0              XVector_0.38.0                
+[21] SingleCellExperiment_1.20.0    SummarizedExperiment_1.28.0   
+[23] Biobase_2.58.0                 GenomicRanges_1.50.2          
+[25] GenomeInfoDb_1.34.5            IRanges_2.32.0                
+[27] S4Vectors_0.36.1               BiocGenerics_0.44.0           
+[29] MatrixGenerics_1.10.0          matrixStats_0.63.0            
+[31] forcats_0.5.2                  stringr_1.5.0                 
+[33] dplyr_1.0.10                   purrr_1.0.0                   
+[35] readr_2.1.3                    tidyr_1.2.1                   
+[37] tibble_3.1.8                   ggplot2_3.4.0                 
+[39] tidyverse_1.3.2                openxlsx_4.2.5.1              
 
 loaded via a namespace (and not attached):
   [1] ragg_1.2.4                  bit64_4.0.5                
@@ -2650,7 +2866,7 @@ loaded via a namespace (and not attached):
  [21] lubridate_1.9.0             ggsci_2.9                  
  [23] assertthat_0.2.1            DirichletMultinomial_1.40.0
  [25] viridis_0.6.2               gargle_1.2.1               
- [27] xfun_0.36                   fBasics_4021.93            
+ [27] fBasics_4021.93             xfun_0.36                  
  [29] hms_1.1.2                   jquerylib_0.1.4            
  [31] evaluate_0.19               fansi_1.0.3                
  [33] dbplyr_2.2.1                readxl_1.4.1               
@@ -2690,7 +2906,7 @@ loaded via a namespace (and not attached):
 [101] zlibbioc_1.44.0             compiler_4.2.2             
 [103] RColorBrewer_1.1-3          plotrix_3.8-2              
 [105] clue_0.3-63                 lme4_1.1-31                
-[107] ade4_1.7-20                 cli_3.5.0                  
+[107] cli_3.5.0                   ade4_1.7-20                
 [109] lmerTest_3.1-3              htmlTable_2.4.1            
 [111] Formula_1.2-4               MASS_7.3-58.1              
 [113] mgcv_1.8-41                 tidyselect_1.2.0           
@@ -2709,8 +2925,8 @@ loaded via a namespace (and not attached):
 [139] Rdpack_2.4                  colorspace_2.0-3           
 [141] rvest_1.0.3                 fs_1.5.2                   
 [143] modeest_2.4.0               splines_4.2.2              
-[145] rmutil_1.1.10               yulab.utils_0.0.6          
-[147] statmod_1.4.37              sn_2.1.0                   
+[145] rmutil_1.1.10               statmod_1.4.37             
+[147] yulab.utils_0.0.6           sn_2.1.0                   
 [149] tidytree_0.4.2              expm_0.999-6               
 [151] scater_1.26.1               multtest_2.54.0            
 [153] Exact_3.2                   systemfonts_1.0.4          
