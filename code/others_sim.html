@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-17" />
+<meta name="date" content="2023-07-18" />
 
 <title>Other Simulation Benchmarks</title>
 
@@ -2998,7 +2998,7 @@ display: none;
 
 
 <h1 class="title toc-ignore">Other Simulation Benchmarks</h1>
-<h4 class="date">July 17, 2023</h4>
+<h4 class="date">July 18, 2023</h4>
 
 </div>
 
@@ -3379,7 +3379,31 @@ fig_fap_cont = df_fig %&gt;%
             color = &quot;method&quot;, palette = &quot;npg&quot;,
             xlab = &quot;Power&quot;, ylab = &quot;FAP&quot;, 
             add = &quot;reg.line&quot;, conf.int = FALSE) +
-  guides(color = guide_legend(title = NULL))</code></pre>
+  guides(color = guide_legend(title = NULL))
+
+fig_cdf_cont1 = df_fig %&gt;%
+  filter(power &gt;= 0.5) %&gt;%
+  ggecdf(x = &quot;fap&quot;, color = &quot;method&quot;, palette = &quot;npg&quot;,
+         xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
+         main = expression(Power &gt;= 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_cont2 = df_fig %&gt;%
+  filter(power &gt;= 0.8) %&gt;%
+  ggecdf(x = &quot;fap&quot;, color = &quot;method&quot;, palette = &quot;npg&quot;,
+         xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
+         main = expression(Power &gt;= 0.8)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_cont3 = df_fig %&gt;%
+  filter(power &gt;= 0.9) %&gt;%
+  ggecdf(x = &quot;fap&quot;, color = &quot;method&quot;, palette = &quot;npg&quot;,
+         xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
+         main = expression(Power &gt;= 0.9)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))</code></pre>
 </div>
 <div id="binary-exposure" class="section level2">
 <h2>Binary exposure</h2>
@@ -3492,7 +3516,31 @@ fig_fap_bin = df_fig %&gt;%
             color = &quot;method&quot;, palette = &quot;npg&quot;,
             xlab = &quot;Power&quot;, ylab = &quot;FAP&quot;, 
             add = &quot;reg.line&quot;, conf.int = FALSE) +
-  guides(color = guide_legend(title = NULL))</code></pre>
+  guides(color = guide_legend(title = NULL))
+
+fig_cdf_bin1 = df_fig %&gt;%
+  filter(power &gt;= 0.5) %&gt;%
+  ggecdf(x = &quot;fap&quot;, color = &quot;method&quot;, palette = &quot;npg&quot;,
+         xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
+         main = expression(Power &gt;= 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_bin2 = df_fig %&gt;%
+  filter(power &gt;= 0.8) %&gt;%
+  ggecdf(x = &quot;fap&quot;, color = &quot;method&quot;, palette = &quot;npg&quot;,
+         xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
+         main = expression(Power &gt;= 0.8)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_bin3 = df_fig %&gt;%
+  filter(power &gt;= 0.9) %&gt;%
+  ggecdf(x = &quot;fap&quot;, color = &quot;method&quot;, palette = &quot;npg&quot;,
+         xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
+         main = expression(Power &gt;= 0.9)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))</code></pre>
 </div>
 </div>
 <div id="outputs" class="section level1">
@@ -3502,14 +3550,17 @@ fig_fap_bin = df_fig %&gt;%
 ggsave(filename = &quot;../results/figures/supp_sim_batch_effects.pdf&quot;, 
        plot = fig_batch, width = 8, height = 5)
 
-fig_fap = ggarrange(fig_fap_cont, fig_fap_bin,
-                    ncol = 1, labels = c(&quot;a&quot;, &quot;b&quot;),
+fig_fap = ggarrange(fig_fap_cont, fig_cdf_cont1, fig_cdf_cont2, fig_cdf_cont3,
+                    fig_fap_bin, fig_cdf_bin1, fig_cdf_bin2, fig_cdf_bin3,
+                    widths = c(2, 1, 1, 1), 
+                    nrow = 2, ncol = 4, labels = c(&quot;a&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;,
+                                                   &quot;b&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;),
                     common.legend = TRUE, legend = &quot;bottom&quot;)
 
 ggsave(filename = &quot;../results/figures/supp_sim_fap.jpeg&quot;, 
-       plot = fig_fap, width = 8, height = 8, dpi = 100)
+       plot = fig_fap, width = 14, height = 8, dpi = 100)
 ggsave(filename = &quot;../results/figures/supp_sim_fap.pdf&quot;, 
-       plot = fig_fap, width = 8, height = 8)</code></pre>
+       plot = fig_fap, width = 14, height = 8)</code></pre>
 </div>
 <div id="session-information" class="section level1">
 <h1>Session information</h1>

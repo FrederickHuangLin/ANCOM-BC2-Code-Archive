@@ -380,6 +380,30 @@ fig_fap_cont = df_fig %>%
             xlab = "Power", ylab = "FAP", 
             add = "reg.line", conf.int = FALSE) +
   guides(color = guide_legend(title = NULL))
+
+fig_cdf_cont1 = df_fig %>%
+  filter(power >= 0.5) %>%
+  ggecdf(x = "fap", color = "method", palette = "npg",
+         xlab = "FAP", ylab = "CDF", 
+         main = expression(Power >= 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_cont2 = df_fig %>%
+  filter(power >= 0.8) %>%
+  ggecdf(x = "fap", color = "method", palette = "npg",
+         xlab = "FAP", ylab = "CDF", 
+         main = expression(Power >= 0.8)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_cont3 = df_fig %>%
+  filter(power >= 0.9) %>%
+  ggecdf(x = "fap", color = "method", palette = "npg",
+         xlab = "FAP", ylab = "CDF", 
+         main = expression(Power >= 0.9)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
 ```
 
 ## Binary exposure
@@ -495,6 +519,30 @@ fig_fap_bin = df_fig %>%
             xlab = "Power", ylab = "FAP", 
             add = "reg.line", conf.int = FALSE) +
   guides(color = guide_legend(title = NULL))
+
+fig_cdf_bin1 = df_fig %>%
+  filter(power >= 0.5) %>%
+  ggecdf(x = "fap", color = "method", palette = "npg",
+         xlab = "FAP", ylab = "CDF", 
+         main = expression(Power >= 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_bin2 = df_fig %>%
+  filter(power >= 0.8) %>%
+  ggecdf(x = "fap", color = "method", palette = "npg",
+         xlab = "FAP", ylab = "CDF", 
+         main = expression(Power >= 0.8)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
+  
+fig_cdf_bin3 = df_fig %>%
+  filter(power >= 0.9) %>%
+  ggecdf(x = "fap", color = "method", palette = "npg",
+         xlab = "FAP", ylab = "CDF", 
+         main = expression(Power >= 0.9)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(plot.title = element_text(hjust = 0.5))
 ```
 
 # Outputs
@@ -505,14 +553,17 @@ ggsave(filename = "../results/figures/supp_sim_batch_effects.jpeg",
 ggsave(filename = "../results/figures/supp_sim_batch_effects.pdf", 
        plot = fig_batch, width = 8, height = 5)
 
-fig_fap = ggarrange(fig_fap_cont, fig_fap_bin,
-                    ncol = 1, labels = c("a", "b"),
+fig_fap = ggarrange(fig_fap_cont, fig_cdf_cont1, fig_cdf_cont2, fig_cdf_cont3,
+                    fig_fap_bin, fig_cdf_bin1, fig_cdf_bin2, fig_cdf_bin3,
+                    widths = c(2, 1, 1, 1), 
+                    nrow = 2, ncol = 4, labels = c("a", "", "", "",
+                                                   "b", "", "", ""),
                     common.legend = TRUE, legend = "bottom")
 
 ggsave(filename = "../results/figures/supp_sim_fap.jpeg", 
-       plot = fig_fap, width = 8, height = 8, dpi = 100)
+       plot = fig_fap, width = 14, height = 8, dpi = 100)
 ggsave(filename = "../results/figures/supp_sim_fap.pdf", 
-       plot = fig_fap, width = 8, height = 8)
+       plot = fig_fap, width = 14, height = 8)
 ```
 
 # Session information
