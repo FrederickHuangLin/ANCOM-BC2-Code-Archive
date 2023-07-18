@@ -2378,7 +2378,7 @@ fig_power_trend = df_fig %>%
 fig_fdr_trend = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
-         xlab = "Sample Size", ylab = "mdFDR", 
+         xlab = "Sample Size", ylab = "FDR", 
          facet.by = "diff_prop", nrow = 1,
          size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
@@ -2413,21 +2413,22 @@ saveWorkbook(wb, file = "../results/outputs/qmp_sim_summ_fixed.xlsx", overwrite 
 
 fig1 = ggarrange(fig_fdr_cont, fig_power_cont, 
                  fig_fdr_bin, fig_power_bin,
-                 fig_fdr_dunn, fig_power_dunn, 
-                 ncol = 1, labels = c("a", "", "b", "", "c", ""), 
+                 ncol = 1, labels = c("a", "", "b", ""), 
                  common.legend = TRUE, legend = "bottom")
 ggsave(filename = "../results/figures/supp_qmp_sim_fixed1.jpeg", 
-       plot = fig1, width = 12, height = 14, dpi = 100)
+       plot = fig1, width = 12, height = 12, dpi = 100)
 ggsave(filename = "../results/figures/supp_qmp_sim_fixed1.pdf", 
-       plot = fig1, width = 12, height = 14)
+       plot = fig1, width = 12, height = 12)
 
-fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
-                 ncol = 1, labels = c("a", "", "b", ""),
+fig2 = ggarrange(fig_fdr_dunn, fig_power_dunn, 
+                 fig_fdr_pair, fig_power_pair, 
+                 fig_fdr_trend, fig_power_trend,
+                 ncol = 1, labels = c("a", "", "b", "", "c", ""),
                  common.legend = TRUE, legend = "bottom")
 ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.jpeg",
-       plot = fig2, width = 12, height = 12, dpi = 100)
+       plot = fig2, width = 12, height = 14, dpi = 100)
 ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.pdf",
-       plot = fig2, width = 12, height = 12)
+       plot = fig2, width = 12, height = 14)
 ```
 
 # Session information

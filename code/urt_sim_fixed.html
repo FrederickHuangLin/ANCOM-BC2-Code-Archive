@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-10" />
+<meta name="date" content="2023-07-17" />
 
 <title>Simulations for Fixed Effects Models: Upper Respiratory Tract Microbiome Data</title>
 
@@ -357,7 +357,7 @@ display: none;
 
 <h1 class="title toc-ignore">Simulations for Fixed Effects Models: Upper
 Respiratory Tract Microbiome Data</h1>
-<h4 class="date">July 10, 2023</h4>
+<h4 class="date">July 17, 2023</h4>
 
 </div>
 
@@ -2762,7 +2762,7 @@ fig_power_trend = df_fig %&gt;%
 fig_fdr_trend = df_fig %&gt;%
   ggline(x = &quot;n&quot;, y = &quot;X2&quot;, add = &quot;mean_se&quot;,
          color = &quot;method&quot;, palette = &quot;npg&quot;,
-         xlab = &quot;Sample Size&quot;, ylab = &quot;mdFDR&quot;, 
+         xlab = &quot;Sample Size&quot;, ylab = &quot;FDR&quot;, 
          facet.by = &quot;diff_prop&quot;, nrow = 1,
          size = 0.4, point.size = 0.1) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
@@ -2796,21 +2796,22 @@ writeData(wb, &quot;trend&quot;, tab)</code></pre>
 
 fig1 = ggarrange(fig_fdr_cont, fig_power_cont, 
                  fig_fdr_bin, fig_power_bin,
-                 fig_fdr_dunn, fig_power_dunn, 
-                 ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;, &quot;c&quot;, &quot;&quot;), 
+                 ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;), 
                  common.legend = TRUE, legend = &quot;bottom&quot;)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed1.jpeg&quot;, 
-       plot = fig1, width = 12, height = 14, dpi = 100)
+       plot = fig1, width = 12, height = 12, dpi = 100)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed1.pdf&quot;, 
-       plot = fig1, width = 12, height = 14)
+       plot = fig1, width = 12, height = 12)
 
-fig2 = ggarrange(fig_fdr_pair, fig_power_pair, fig_fdr_trend, fig_power_trend,
-                 ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;),
+fig2 = ggarrange(fig_fdr_dunn, fig_power_dunn, 
+                 fig_fdr_pair, fig_power_pair, 
+                 fig_fdr_trend, fig_power_trend,
+                 ncol = 1, labels = c(&quot;a&quot;, &quot;&quot;, &quot;b&quot;, &quot;&quot;, &quot;c&quot;, &quot;&quot;),
                  common.legend = TRUE, legend = &quot;bottom&quot;)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.jpeg&quot;,
-       plot = fig2, width = 12, height = 12, dpi = 100)
+       plot = fig2, width = 12, height = 14, dpi = 100)
 ggsave(filename = &quot;../results/figures/main_urt_sim_fixed2.pdf&quot;,
-       plot = fig2, width = 12, height = 12)</code></pre>
+       plot = fig2, width = 12, height = 14)</code></pre>
 </div>
 <div id="session-information" class="section level1">
 <h1>Session information</h1>
