@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-06" />
+<meta name="date" content="2023-07-19" />
 
 <title>Real Data Applications: QIITA 11546</title>
 
@@ -356,7 +356,7 @@ display: none;
 
 
 <h1 class="title toc-ignore">Real Data Applications: QIITA 11546</h1>
-<h4 class="date">July 06, 2023</h4>
+<h4 class="date">July 19, 2023</h4>
 
 </div>
 
@@ -377,6 +377,25 @@ information</a></li>
 </ul>
 </div>
 
+<pre class="r"><code>knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
+                      message = FALSE, comment = NA,
+                      fig.width = 6.25, fig.height = 5)
+options(qwraps2_markup = &quot;markdown&quot;,
+        qwraps2_frmt_digits = 2)
+
+library(biomformat)
+library(tidyverse)
+library(mia)
+library(ANCOMBC)
+library(magrittr)
+library(qwraps2)
+library(ggsci)
+library(ggpubr)
+library(DT)
+options(DT.options = list(
+  initComplete = JS(&quot;function(settings, json) {&quot;,
+  &quot;$(this.api().table().header()).css({&#39;background-color&#39;: 
+  &#39;#000&#39;, &#39;color&#39;: &#39;#fff&#39;});&quot;,&quot;}&quot;)))</code></pre>
 <div id="data-import" class="section level1">
 <h1>Data import</h1>
 <pre class="r"><code># Metadata
@@ -703,26 +722,28 @@ df_fig2 = res_pair %&gt;%
              p_surgery_typecolectomy &lt; 0.05 |
              p_surgery_typecolectomy_surgery_typeileocolonic &lt; 0.05) %&gt;%
   transmute(species,
-            lfc1 = case_when(
-              q_surgery_typeileocolonic &lt; 0.05 &amp; passed_ss_surgery_typeileocolonic == TRUE ~ &quot;aquamarine3&quot;,
-              q_surgery_typeileocolonic &lt; 0.05 &amp; passed_ss_surgery_typeileocolonic == FALSE ~ &quot;tan3&quot;,
-              TRUE ~ &quot;black&quot;
-            ),
-            lfc2 = case_when(
-              q_surgery_typecolectomy &lt; 0.05 &amp; passed_ss_surgery_typecolectomy == TRUE ~ &quot;aquamarine3&quot;,
-              q_surgery_typecolectomy &lt; 0.05 &amp; passed_ss_surgery_typecolectomy == FALSE ~ &quot;tan3&quot;,
-              TRUE ~ &quot;black&quot;
-            ),
-            lfc3 = case_when(
-              q_surgery_typecolectomy_surgery_typeileocolonic &lt; 0.05 &amp; passed_ss_surgery_typecolectomy_surgery_typeileocolonic == TRUE ~ &quot;aquamarine3&quot;,
-              q_surgery_typecolectomy_surgery_typeileocolonic &lt; 0.05 &amp; passed_ss_surgery_typecolectomy_surgery_typeileocolonic == FALSE ~ &quot;tan3&quot;,
-              TRUE ~ &quot;black&quot;
-            )) %&gt;%
+            lfc1 = ifelse(q_surgery_typeileocolonic &lt; 0.05, &quot;aquamarine3&quot;, &quot;black&quot;),
+            lfc2 = ifelse(q_surgery_typecolectomy &lt; 0.05, &quot;aquamarine3&quot;, &quot;black&quot;),
+            lfc3 = ifelse(q_surgery_typecolectomy_surgery_typeileocolonic &lt; 0.05, &quot;aquamarine3&quot;, &quot;black&quot;)) %&gt;%
   pivot_longer(lfc1:lfc3, names_to = &quot;group&quot;, values_to = &quot;color&quot;) %&gt;%
   arrange(species)
 
+df_fig3 = res_pair %&gt;%
+  filter(p_surgery_typeileocolonic &lt; 0.05 | 
+             p_surgery_typecolectomy &lt; 0.05 |
+             p_surgery_typecolectomy_surgery_typeileocolonic &lt; 0.05) %&gt;%
+  transmute(species,
+            lfc1 = ifelse(passed_ss_surgery_typeileocolonic == TRUE, &quot;yes&quot;, &quot;no&quot;),
+            lfc2 = ifelse(passed_ss_surgery_typecolectomy == TRUE, &quot;yes&quot;, &quot;no&quot;),
+            lfc3 = ifelse(passed_ss_surgery_typecolectomy_surgery_typeileocolonic == TRUE, &quot;yes&quot;, &quot;no&quot;)) %&gt;%
+  pivot_longer(lfc1:lfc3, names_to = &quot;group&quot;, values_to = &quot;asterisk&quot;) %&gt;%
+  arrange(species)
+
 df_fig = df_fig1 %&gt;%
-  dplyr::left_join(df_fig2, by = c(&quot;species&quot;, &quot;group&quot;))
+  dplyr::left_join(df_fig2, by = c(&quot;species&quot;, &quot;group&quot;)) %&gt;%
+  dplyr::left_join(df_fig3, by = c(&quot;species&quot;, &quot;group&quot;)) %&gt;%
+  dplyr::mutate(txt = ifelse(color == &quot;aquamarine3&quot; &amp; asterisk == &quot;yes&quot;,
+                             paste0(&quot;*&quot;, value), value))
 
 df_fig$group = recode(df_fig$group, 
                       `lfc1` = &quot;Ileocolonic - None&quot;,
@@ -739,7 +760,7 @@ fig_heat_pair = df_fig %&gt;%
   scale_fill_gradient2(low = &quot;blue&quot;, high = &quot;red&quot;, mid = &quot;white&quot;, 
                        na.value = &quot;white&quot;, midpoint = 0, limit = c(-6, 6),
                        name = NULL) +
-  geom_text(aes(group, species, label = value, color = color), size = 4) +
+  geom_text(aes(group, species, label = txt, color = color), size = 4) +
   scale_color_identity(guide = FALSE) +
   labs(x = NULL, y = NULL, title = NULL) +
   theme_minimal() +

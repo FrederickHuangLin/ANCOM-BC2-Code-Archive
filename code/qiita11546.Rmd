@@ -7,7 +7,7 @@ output:
     theme: united
 ---
 
-```{r setup, include = FALSE}
+```{r setup, message=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
                       message = FALSE, comment = NA,
                       fig.width = 6.25, fig.height = 5)
@@ -207,26 +207,28 @@ df_fig2 = res_pair %>%
              p_surgery_typecolectomy < 0.05 |
              p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
   transmute(species,
-            lfc1 = case_when(
-              q_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typeileocolonic == TRUE ~ "aquamarine3",
-              q_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typeileocolonic == FALSE ~ "tan3",
-              TRUE ~ "black"
-            ),
-            lfc2 = case_when(
-              q_surgery_typecolectomy < 0.05 & passed_ss_surgery_typecolectomy == TRUE ~ "aquamarine3",
-              q_surgery_typecolectomy < 0.05 & passed_ss_surgery_typecolectomy == FALSE ~ "tan3",
-              TRUE ~ "black"
-            ),
-            lfc3 = case_when(
-              q_surgery_typecolectomy_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typecolectomy_surgery_typeileocolonic == TRUE ~ "aquamarine3",
-              q_surgery_typecolectomy_surgery_typeileocolonic < 0.05 & passed_ss_surgery_typecolectomy_surgery_typeileocolonic == FALSE ~ "tan3",
-              TRUE ~ "black"
-            )) %>%
+            lfc1 = ifelse(q_surgery_typeileocolonic < 0.05, "aquamarine3", "black"),
+            lfc2 = ifelse(q_surgery_typecolectomy < 0.05, "aquamarine3", "black"),
+            lfc3 = ifelse(q_surgery_typecolectomy_surgery_typeileocolonic < 0.05, "aquamarine3", "black")) %>%
   pivot_longer(lfc1:lfc3, names_to = "group", values_to = "color") %>%
   arrange(species)
 
+df_fig3 = res_pair %>%
+  filter(p_surgery_typeileocolonic < 0.05 | 
+             p_surgery_typecolectomy < 0.05 |
+             p_surgery_typecolectomy_surgery_typeileocolonic < 0.05) %>%
+  transmute(species,
+            lfc1 = ifelse(passed_ss_surgery_typeileocolonic == TRUE, "yes", "no"),
+            lfc2 = ifelse(passed_ss_surgery_typecolectomy == TRUE, "yes", "no"),
+            lfc3 = ifelse(passed_ss_surgery_typecolectomy_surgery_typeileocolonic == TRUE, "yes", "no")) %>%
+  pivot_longer(lfc1:lfc3, names_to = "group", values_to = "asterisk") %>%
+  arrange(species)
+
 df_fig = df_fig1 %>%
-  dplyr::left_join(df_fig2, by = c("species", "group"))
+  dplyr::left_join(df_fig2, by = c("species", "group")) %>%
+  dplyr::left_join(df_fig3, by = c("species", "group")) %>%
+  dplyr::mutate(txt = ifelse(color == "aquamarine3" & asterisk == "yes",
+                             paste0("*", value), value))
 
 df_fig$group = recode(df_fig$group, 
                       `lfc1` = "Ileocolonic - None",
@@ -243,7 +245,7 @@ fig_heat_pair = df_fig %>%
   scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
                        na.value = "white", midpoint = 0, limit = c(-6, 6),
                        name = NULL) +
-  geom_text(aes(group, species, label = value, color = color), size = 4) +
+  geom_text(aes(group, species, label = txt, color = color), size = 4) +
   scale_color_identity(guide = FALSE) +
   labs(x = NULL, y = NULL, title = NULL) +
   theme_minimal() +

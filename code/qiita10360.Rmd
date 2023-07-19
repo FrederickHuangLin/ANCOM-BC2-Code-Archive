@@ -7,7 +7,7 @@ output:
     theme: united
 ---
 
-```{r setup, include = FALSE}
+```{r setup, message=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
                       message = FALSE, comment = NA,
                       fig.width = 6.25, fig.height = 5)
@@ -253,15 +253,12 @@ df_zero = output$zero_ind %>%
 ```{r, fig.height=4}
 df_fig = res_trend %>%
   dplyr::filter(p_val < 0.05) %>%
-  transmute(genus, lfc1 = 0, 
+  transmute(genus = ifelse(q_val < 0.05 & passed_ss == TRUE, paste0("*", genus), genus), 
+            lfc1 = 0, 
             lfc2 = round(lfc_aridityMargin, 2), 
             lfc3 = round(lfc_aridityHyperarid, 2),
             p_val, q_val, passed_ss, 
-            color = case_when(
-              q_val < 0.05 & passed_ss == TRUE ~ "aquamarine3",
-              q_val < 0.05 & passed_ss == FALSE ~ "tan3",
-              TRUE ~ "black"
-            )) %>%
+            color = ifelse(q_val < 0.05, "aquamarine3", "black")) %>%
   pivot_longer(lfc1:lfc3, names_to = "group", values_to = "value") %>%
   arrange(genus)
 df_fig$group = recode(df_fig$group, 

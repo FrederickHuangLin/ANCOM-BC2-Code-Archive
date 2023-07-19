@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-07" />
+<meta name="date" content="2023-07-19" />
 
 <title>Real Data Applications: QIITA 10360</title>
 
@@ -356,7 +356,7 @@ display: none;
 
 
 <h1 class="title toc-ignore">Real Data Applications: QIITA 10360</h1>
-<h4 class="date">July 07, 2023</h4>
+<h4 class="date">July 19, 2023</h4>
 
 </div>
 
@@ -386,6 +386,32 @@ information</a></li>
 </ul>
 </div>
 
+<pre class="r"><code>knitr::opts_chunk$set(echo = TRUE, warning = FALSE, 
+                      message = FALSE, comment = NA,
+                      fig.width = 6.25, fig.height = 5)
+options(qwraps2_markup = &quot;markdown&quot;,
+        qwraps2_frmt_digits = 2)
+
+library(biomformat)
+library(openxlsx)
+library(tidyverse)
+library(mia)
+library(ANCOMBC)
+library(magrittr)
+library(qwraps2)
+library(ggsci)
+library(ggpubr)
+library(DT)
+options(DT.options = list(
+  initComplete = JS(&quot;function(settings, json) {&quot;,
+  &quot;$(this.api().table().header()).css({&#39;background-color&#39;: 
+  &#39;#000&#39;, &#39;color&#39;: &#39;#fff&#39;});&quot;,&quot;}&quot;)))
+
+get_upper_tri = function(cormat){
+    cormat[lower.tri(cormat)] = NA
+    diag(cormat) = NA
+    return(cormat)
+}</code></pre>
 <div id="data-import" class="section level1">
 <h1>Data import</h1>
 <pre class="r"><code># Metadata
@@ -774,15 +800,12 @@ res_trend = output$res_trend %&gt;%
 <h2>Trend test</h2>
 <pre class="r"><code>df_fig = res_trend %&gt;%
   dplyr::filter(p_val &lt; 0.05) %&gt;%
-  transmute(genus, lfc1 = 0, 
+  transmute(genus = ifelse(q_val &lt; 0.05 &amp; passed_ss == TRUE, paste0(&quot;*&quot;, genus), genus), 
+            lfc1 = 0, 
             lfc2 = round(lfc_aridityMargin, 2), 
             lfc3 = round(lfc_aridityHyperarid, 2),
             p_val, q_val, passed_ss, 
-            color = case_when(
-              q_val &lt; 0.05 &amp; passed_ss == TRUE ~ &quot;aquamarine3&quot;,
-              q_val &lt; 0.05 &amp; passed_ss == FALSE ~ &quot;tan3&quot;,
-              TRUE ~ &quot;black&quot;
-            )) %&gt;%
+            color = ifelse(q_val &lt; 0.05, &quot;aquamarine3&quot;, &quot;black&quot;)) %&gt;%
   pivot_longer(lfc1:lfc3, names_to = &quot;group&quot;, values_to = &quot;value&quot;) %&gt;%
   arrange(genus)
 df_fig$group = recode(df_fig$group, 
