@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-19" />
+<meta name="date" content="2023-09-13" />
 
 <title>Real Data Applications: QIITA 11546</title>
 
@@ -356,7 +356,7 @@ display: none;
 
 
 <h1 class="title toc-ignore">Real Data Applications: QIITA 11546</h1>
-<h4 class="date">July 19, 2023</h4>
+<h4 class="date">September 13, 2023</h4>
 
 </div>
 
@@ -760,11 +760,14 @@ fig_heat_pair = df_fig %&gt;%
   scale_fill_gradient2(low = &quot;blue&quot;, high = &quot;red&quot;, mid = &quot;white&quot;, 
                        na.value = &quot;white&quot;, midpoint = 0, limit = c(-6, 6),
                        name = NULL) +
-  geom_text(aes(group, species, label = txt, color = color), size = 4) +
+  geom_text(aes(group, species, label = txt, color = color), size = 2) +
   scale_color_identity(guide = FALSE) +
   labs(x = NULL, y = NULL, title = NULL) +
   theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5))</code></pre>
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text = element_text(size = 4.5),
+        legend.text = element_text(size = 5),
+        axis.text.y = element_text(face = &quot;italic&quot;))</code></pre>
 </div>
 </div>
 <div id="outputs" class="section level1">
@@ -774,17 +777,15 @@ fig_heat_pair = df_fig %&gt;%
 
 write_csv(df_zero, &quot;../results/outputs/qiita_11546_presence_absence.csv&quot;)
 
-ggsave(filename = &quot;../results/figures/main_qiita_11546.jpeg&quot;, 
-       plot = fig_heat_pair, width = 6.25, height = 5, dpi = 100)
 ggsave(filename = &quot;../results/figures/main_qiita_11546.pdf&quot;, 
-       plot = fig_heat_pair, width = 6.25, height = 5)</code></pre>
+       plot = fig_heat_pair, width = 88, height = 70, units = &quot;mm&quot;)</code></pre>
 </div>
 <div id="session-information" class="section level1">
 <h1>Session information</h1>
 <pre class="r"><code>sessionInfo()</code></pre>
 <pre><code>R version 4.2.2 (2022-10-31)
 Platform: aarch64-apple-darwin20 (64-bit)
-Running under: macOS Monterey 12.6.7
+Running under: macOS Monterey 12.6.8
 
 Matrix products: default
 BLAS:   /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRblas.0.dylib

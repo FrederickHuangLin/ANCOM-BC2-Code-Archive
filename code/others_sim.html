@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2023-07-18" />
+<meta name="date" content="2023-09-08" />
 
 <title>Other Simulation Benchmarks</title>
 
@@ -2998,7 +2998,7 @@ display: none;
 
 
 <h1 class="title toc-ignore">Other Simulation Benchmarks</h1>
-<h4 class="date">July 18, 2023</h4>
+<h4 class="date">September 08, 2023</h4>
 
 </div>
 
@@ -3026,6 +3026,7 @@ information</a></li>
 library(openxlsx)
 library(tidyverse)
 library(mia)
+library(microbiome)
 library(ggpubr)
 library(doRNG)
 library(doParallel)
@@ -3104,67 +3105,23 @@ fig3 = smd3 %&gt;%
 </div>
 <div id="computing-time" class="section level1">
 <h1>Computing time</h1>
-<p>1 continuous exposure + 1 binary confounder</p>
-<pre class="r"><code># Simulation settings
-data(throat.otu.table, package = &quot;LOCOM&quot;)
-# Use the URT data as the template to obtain mean vector and variance-covariance
-# matrix. Discard OTUs that have less than 5% of prevalence across samples
-prevalence = apply(t(throat.otu.table), 1, function(x)
-  sum(x != 0, na.rm = TRUE)/length(x[!is.na(x)]))
-tax_keep = which(prevalence &gt;= 0.05)
+<pre class="r"><code>data(atlas1006, package = &quot;microbiome&quot;)
+pseq = subset_samples(atlas1006, time == 0)
+pseq = subset_samples(pseq, bmi_group %in% c(&quot;lean&quot;, &quot;obese&quot;))
+tse = mia::makeTreeSummarizedExperimentFromPhyloseq(pseq)
 
-set.seed(12345)
-n = 30
-d = length(tax_keep)
-diff_prop = 0.1
-lfc_value = c(-2, -1, 1, 2)
-
-# Generate the true abundances
-abn_data = sim_plnm(abn_table = throat.otu.table, taxa_are_rows = FALSE, 
-                    prv_cut = 0.05, n = n, lib_mean = 1e8, disp = 0.5)
-log_abn_data = log(abn_data + 1e-5)
-rownames(log_abn_data) = paste0(&quot;T&quot;, seq_len(d))
-colnames(log_abn_data) = paste0(&quot;S&quot;, seq_len(n))
-
-# Generate the sample and feature meta data
-# Sampling fractions are set to differ by the variable of interest
-smd = data.frame(sample = paste0(&quot;S&quot;, seq_len(n)),
-                 cont_cov = rnorm(n),
-                 bin_cov = as.factor(rep(seq_len(2), each = n/2))) %&gt;%
-  dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
-lfc_cont = sample(c(0, lfc_value), size = d, replace = TRUE,
-                  prob = c(1 - diff_prop, 
-                           rep(diff_prop/length(lfc_value), length(lfc_value)))) 
-lfc_bin = sample(c(0, 1), size = d, replace = TRUE,
-                 prob = c(1 - diff_prop, diff_prop))
-
-fmd = data.frame(taxon = paste0(&quot;T&quot;, seq_len(d)),
-                     seq_eff = log(runif(d, min = 0.1, max = 1)),
-                     lfc_cont = lfc_cont,
-                     lfc_bin = lfc_bin)
-    
-# Add effect sizes of covariates to the true abundances
-smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
-log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, &quot;cont_cov&quot;] )
-log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, &quot;bin_cov2&quot;])
-
-# Add sample- and taxon-specific biases
-log_otu_data = t(t(log_abn_data) + smd$samp_frac)
-log_otu_data = log_otu_data + fmd$seq_eff
-otu_data = round(exp(log_otu_data))
-
-# Create the tse object
-assays = S4Vectors::SimpleList(counts = otu_data)
-smd = S4Vectors::DataFrame(smd)
-tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
-
-# ANCOM-BC2
-t1_ancombc2 = Sys.time()
+pseq</code></pre>
+<pre><code>phyloseq-class experiment-level object
+otu_table()   OTU Table:         [ 130 taxa and 630 samples ]
+sample_data() Sample Data:       [ 630 samples by 10 sample variables ]
+tax_table()   Taxonomy Table:    [ 130 taxa by 3 taxonomic ranks ]</code></pre>
+<pre class="r"><code># ANCOM-BC2 (No Filter)
+t1_ancombc2_no = Sys.time()
 output = ancombc2(data = tse, assay_name = &quot;counts&quot;, tax_level = NULL,
-                  fix_formula = &quot;cont_cov + bin_cov&quot;, rand_formula = NULL,
-                  p_adj_method = &quot;holm&quot;, 
+                  fix_formula = &quot;age + bmi_group&quot;, rand_formula = NULL,
+                  p_adj_method = &quot;holm&quot;, pseudo_sens = FALSE,
                   prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
-                  group = &quot;bin_cov&quot;, struc_zero = FALSE, neg_lb = FALSE,
+                  group = &quot;bmi_group&quot;, struc_zero = FALSE, neg_lb = FALSE,
                   alpha = 0.05, n_cl = 1, verbose = FALSE,
                   global = FALSE, pairwise = FALSE, 
                   dunnet = FALSE, trend = FALSE,
@@ -3173,39 +3130,45 @@ output = ancombc2(data = tse, assay_name = &quot;counts&quot;, tax_level = NULL,
                   em_control = list(tol = 1e-5, max_iter = 100),
                   lme_control = NULL, mdfdr_control = NULL, 
                   trend_control = NULL)
-t2_ancombc2 = Sys.time()
-t_ancombc2 = t2_ancombc2 - t1_ancombc2
+t2_ancombc2_no = Sys.time()
+t_ancombc2_no = t2_ancombc2_no - t1_ancombc2_no
+
+# ANCOM-BC2 (SS Filter)
+t1_ancombc2_ss = Sys.time()
+output = ancombc2(data = tse, assay_name = &quot;counts&quot;, tax_level = NULL,
+                  fix_formula = &quot;age + bmi_group&quot;, rand_formula = NULL,
+                  p_adj_method = &quot;holm&quot;, pseudo_sens = TRUE,
+                  prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                  group = &quot;bmi_group&quot;, struc_zero = FALSE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 1, verbose = FALSE,
+                  global = FALSE, pairwise = FALSE, 
+                  dunnet = FALSE, trend = FALSE,
+                  iter_control = list(tol = 1e-5, max_iter = 20, 
+                                      verbose = FALSE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = NULL, mdfdr_control = NULL, 
+                  trend_control = NULL)
+t2_ancombc2_ss = Sys.time()
+t_ancombc2_ss = t2_ancombc2_ss - t1_ancombc2_ss
 
 # ANCOM-BC
 t1_ancombc = Sys.time()
 output = ancombc(data = tse, assay_name = &quot;counts&quot;, 
                  tax_level = NULL, phyloseq = NULL, 
-                 formula = &quot;cont_cov + bin_cov&quot;, 
+                 formula = &quot;age + bmi_group&quot;, 
                  p_adj_method = &quot;holm&quot;, prv_cut = 0.10, lib_cut = 1000, 
-                 group = &quot;bin_cov&quot;, struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
+                 group = &quot;bmi_group&quot;, struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
                  max_iter = 100, conserve = TRUE, alpha = 0.05, global = FALSE,
                  n_cl = 1, verbose = FALSE)
 t2_ancombc = Sys.time()
 t_ancombc = t2_ancombc - t1_ancombc
 
 # CORNCOB
-# Remove samples with low library sizes
-idx = which(colSums(otu_data) &gt; 1000)
-otu_data = otu_data[, idx]
-smd = smd[idx, ]
-
-# Crease the phyloseq object
-OTU = otu_table(otu_data, taxa_are_rows = TRUE)
-META = sample_data(as.data.frame(smd))
-sample_names(META) = smd$sample
-pseq = phyloseq(OTU, META)
-
-# Run corncob
 t1_corncob = Sys.time()
-output = differentialTest(formula = ~ cont_cov + bin_cov,
-                          phi.formula = ~ cont_cov + bin_cov,
-                          formula_null = ~ bin_cov,
-                          phi.formula_null = ~ cont_cov + bin_cov,
+output = differentialTest(formula = ~ age + bmi_group,
+                          phi.formula = ~ age + bmi_group,
+                          formula_null = ~ age,
+                          phi.formula_null = ~ age + bmi_group,
                           test = &quot;Wald&quot;, boot = FALSE,
                           data = pseq,
                           fdr = &quot;holm&quot;,
@@ -3214,6 +3177,8 @@ t2_corncob = Sys.time()
 t_corncob = t2_corncob - t1_corncob
 
 # LinDA
+otu_data = abundances(pseq)
+smd = meta(pseq)
 # Remove samples with low library sizes
 idx = which(colSums(otu_data) &gt; 1000)
 otu_data = otu_data[, idx]
@@ -3221,7 +3186,7 @@ smd = smd[idx, ]
 
 t1_linda = Sys.time()
 output = linda(feature.dat = otu_data, meta.dat = smd,
-               formula = &quot;~ cont_cov + bin_cov&quot;,
+               formula = &quot;~ age + bmi_group&quot;,
                alpha = 0.05, 
                prev.filter = 0.10, 
                mean.abund.filter = 0,
@@ -3240,8 +3205,8 @@ otu_data = otu_data[, idx]
 smd = smd[idx, ]
 
 otu_table = data.matrix(t(otu_data))
-Y = smd$cont_cov
-C = data.matrix(model.matrix(Y ~ smd$bin_cov - 1))[, -1]
+Y = ifelse(smd$bmi_group == &quot;lean&quot;, 0, 1)
+C = smd$age
 
 t1_locom = Sys.time()
 output = locom(otu.table = otu_table, 
@@ -3255,15 +3220,17 @@ output = locom(otu.table = otu_table,
 t2_locom = Sys.time()
 t_locom = t2_locom - t1_locom
 
-df_t = data.frame(method = c(&quot;ANCOM-BC2&quot;, &quot;ANCOM-BC&quot;, &quot;CORNCOB&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;),
-                  time = c(t_ancombc2, t_ancombc, t_corncob, t_linda, t_locom)) %&gt;%
+df_t = data.frame(method = c(&quot;ANCOM-BC2 (No Filter)&quot;, &quot;ANCOM-BC2 (SS Filter)&quot;, 
+                             &quot;ANCOM-BC&quot;, &quot;CORNCOB&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;),
+                  time = c(t_ancombc2_no, t_ancombc2_ss, t_ancombc, 
+                           t_corncob, t_linda, t_locom)) %&gt;%
   mutate(time = round(time, 2))
 saveRDS(df_t, file = &quot;../data/others/df_t.RDS&quot;)</code></pre>
 <pre class="r"><code>df_t = read_rds(file = &quot;../data/others/df_t.RDS&quot;)
 df_t %&gt;%
     datatable(caption = &quot;CPU Time Comparison&quot;)</code></pre>
 <div class="datatables html-widget html-fill-item-overflow-hidden html-fill-item" id="htmlwidget-c2a931752ae4f30d7598" style="width:100%;height:auto;"></div>
-<script type="application/json" data-for="htmlwidget-c2a931752ae4f30d7598">{"x":{"filter":"none","vertical":false,"caption":"<caption>CPU Time Comparison<\/caption>","data":[["1","2","3","4","5"],["ANCOM-BC2","ANCOM-BC","CORNCOB","LinDA","LOCOM"],[47.84,9.16,12.65,0.06,38.85]],"container":"<table class=\"display\">\n  <thead>\n    <tr>\n      <th> <\/th>\n      <th>method<\/th>\n      <th>time<\/th>\n    <\/tr>\n  <\/thead>\n<\/table>","options":{"initComplete":"function(settings, json) {\n$(this.api().table().header()).css({'background-color': \n  '#000', 'color': '#fff'});\n}","columnDefs":[{"orderable":false,"targets":0}],"order":[],"autoWidth":false,"orderClasses":false}},"evals":["options.initComplete"],"jsHooks":[]}</script>
+<script type="application/json" data-for="htmlwidget-c2a931752ae4f30d7598">{"x":{"filter":"none","vertical":false,"caption":"<caption>CPU Time Comparison<\/caption>","data":[["1","2","3","4","5","6"],["ANCOM-BC2 (No Filter)","ANCOM-BC2 (SS Filter)","ANCOM-BC","CORNCOB","LinDA","LOCOM"],[8.58,29.42,6.02,59.34,0.05,62.3]],"container":"<table class=\"display\">\n  <thead>\n    <tr>\n      <th> <\/th>\n      <th>method<\/th>\n      <th>time<\/th>\n    <\/tr>\n  <\/thead>\n<\/table>","options":{"initComplete":"function(settings, json) {\n$(this.api().table().header()).css({'background-color': \n  '#000', 'color': '#fff'});\n}","columnDefs":[{"orderable":false,"targets":0}],"order":[],"autoWidth":false,"orderClasses":false}},"evals":["options.initComplete"],"jsHooks":[]}</script>
 </div>
 <div id="fdr-adjusted-power-fap" class="section level1 tabset">
 <h1 class="tabset">FDR adjusted power (FAP)</h1>
@@ -3375,11 +3342,14 @@ df_fig$method = factor(df_fig$method,
                                   &quot;ANCOM-BC&quot;, &quot;CORNCOB&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;))
 
 fig_fap_cont = df_fig %&gt;%
-  ggscatter(x = &quot;power&quot;, y = &quot;fap&quot;, 
+  ggscatter(x = &quot;power&quot;, y = &quot;fap&quot;, size = 0.5,  
             color = &quot;method&quot;, palette = &quot;npg&quot;,
             xlab = &quot;Power&quot;, ylab = &quot;FAP&quot;, 
-            add = &quot;reg.line&quot;, conf.int = FALSE) +
-  guides(color = guide_legend(title = NULL))
+            add = &quot;reg.line&quot;, conf.int = FALSE, add.params = list(size = 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
 
 fig_cdf_cont1 = df_fig %&gt;%
   filter(power &gt;= 0.5) %&gt;%
@@ -3387,7 +3357,10 @@ fig_cdf_cont1 = df_fig %&gt;%
          xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
          main = expression(Power &gt;= 0.5)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_cont2 = df_fig %&gt;%
   filter(power &gt;= 0.8) %&gt;%
@@ -3395,7 +3368,10 @@ fig_cdf_cont2 = df_fig %&gt;%
          xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
          main = expression(Power &gt;= 0.8)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_cont3 = df_fig %&gt;%
   filter(power &gt;= 0.9) %&gt;%
@@ -3403,7 +3379,10 @@ fig_cdf_cont3 = df_fig %&gt;%
          xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
          main = expression(Power &gt;= 0.9)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))</code></pre>
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))</code></pre>
 </div>
 <div id="binary-exposure" class="section level2">
 <h2>Binary exposure</h2>
@@ -3512,11 +3491,14 @@ df_fig$method = factor(df_fig$method,
                                   &quot;ANCOM-BC&quot;, &quot;CORNCOB&quot;, &quot;LinDA&quot;, &quot;LOCOM&quot;))
 
 fig_fap_bin = df_fig %&gt;%
-  ggscatter(x = &quot;power&quot;, y = &quot;fap&quot;, 
+  ggscatter(x = &quot;power&quot;, y = &quot;fap&quot;, size = 0.5, 
             color = &quot;method&quot;, palette = &quot;npg&quot;,
             xlab = &quot;Power&quot;, ylab = &quot;FAP&quot;, 
-            add = &quot;reg.line&quot;, conf.int = FALSE) +
-  guides(color = guide_legend(title = NULL))
+            add = &quot;reg.line&quot;, conf.int = FALSE, add.params = list(size = 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
 
 fig_cdf_bin1 = df_fig %&gt;%
   filter(power &gt;= 0.5) %&gt;%
@@ -3524,7 +3506,10 @@ fig_cdf_bin1 = df_fig %&gt;%
          xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
          main = expression(Power &gt;= 0.5)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_bin2 = df_fig %&gt;%
   filter(power &gt;= 0.8) %&gt;%
@@ -3532,7 +3517,10 @@ fig_cdf_bin2 = df_fig %&gt;%
          xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
          main = expression(Power &gt;= 0.8)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_bin3 = df_fig %&gt;%
   filter(power &gt;= 0.9) %&gt;%
@@ -3540,34 +3528,33 @@ fig_cdf_bin3 = df_fig %&gt;%
          xlab = &quot;FAP&quot;, ylab = &quot;CDF&quot;, 
          main = expression(Power &gt;= 0.9)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))</code></pre>
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))</code></pre>
 </div>
 </div>
 <div id="outputs" class="section level1">
 <h1>Outputs</h1>
-<pre class="r"><code>ggsave(filename = &quot;../results/figures/supp_sim_batch_effects.jpeg&quot;, 
-       plot = fig_batch, width = 8, height = 5, dpi = 100)
-ggsave(filename = &quot;../results/figures/supp_sim_batch_effects.pdf&quot;, 
-       plot = fig_batch, width = 8, height = 5)
+<pre class="r"><code>ggsave(filename = &quot;../results/figures/extend_sim_batch_effects.jpeg&quot;, 
+       plot = fig_batch, width = 180, height = 120, units = &quot;mm&quot;, dpi = 300)
 
 fig_fap = ggarrange(fig_fap_cont, fig_cdf_cont1, fig_cdf_cont2, fig_cdf_cont3,
                     fig_fap_bin, fig_cdf_bin1, fig_cdf_bin2, fig_cdf_bin3,
-                    widths = c(2, 1, 1, 1), 
+                    widths = c(2, 1, 1, 1), font.label = list(size = 8),
                     nrow = 2, ncol = 4, labels = c(&quot;a&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;,
                                                    &quot;b&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;),
                     common.legend = TRUE, legend = &quot;bottom&quot;)
 
-ggsave(filename = &quot;../results/figures/supp_sim_fap.jpeg&quot;, 
-       plot = fig_fap, width = 14, height = 8, dpi = 100)
-ggsave(filename = &quot;../results/figures/supp_sim_fap.pdf&quot;, 
-       plot = fig_fap, width = 14, height = 8)</code></pre>
+ggsave(filename = &quot;../results/figures/extend_sim_fap.jpeg&quot;, 
+       plot = fig_fap, width = 180, height = 100, units = &quot;mm&quot;, dpi = 300)</code></pre>
 </div>
 <div id="session-information" class="section level1">
 <h1>Session information</h1>
 <pre class="r"><code>sessionInfo()</code></pre>
 <pre><code>R version 4.2.2 (2022-10-31)
 Platform: aarch64-apple-darwin20 (64-bit)
-Running under: macOS Monterey 12.6.7
+Running under: macOS Monterey 12.6.8
 
 Matrix products: default
 BLAS:   /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRblas.0.dylib
@@ -3588,24 +3575,25 @@ other attached packages:
  [9] doParallel_1.0.17              iterators_1.0.14              
 [11] doRNG_1.8.3                    rngtools_1.5.2                
 [13] foreach_1.5.2                  ggpubr_0.5.0                  
-[15] mia_1.6.0                      MultiAssayExperiment_1.24.0   
-[17] TreeSummarizedExperiment_2.6.0 Biostrings_2.66.0             
-[19] XVector_0.38.0                 SingleCellExperiment_1.20.0   
-[21] SummarizedExperiment_1.28.0    Biobase_2.58.0                
-[23] GenomicRanges_1.50.2           GenomeInfoDb_1.34.5           
-[25] IRanges_2.32.0                 S4Vectors_0.36.1              
-[27] BiocGenerics_0.44.0            MatrixGenerics_1.10.0         
-[29] matrixStats_0.63.0             forcats_0.5.2                 
-[31] stringr_1.5.0                  dplyr_1.0.10                  
-[33] purrr_1.0.0                    readr_2.1.3                   
-[35] tidyr_1.2.1                    tibble_3.1.8                  
-[37] ggplot2_3.4.0                  tidyverse_1.3.2               
-[39] openxlsx_4.2.5.1              
+[15] microbiome_1.20.0              phyloseq_1.42.0               
+[17] mia_1.6.0                      MultiAssayExperiment_1.24.0   
+[19] TreeSummarizedExperiment_2.6.0 Biostrings_2.66.0             
+[21] XVector_0.38.0                 SingleCellExperiment_1.20.0   
+[23] SummarizedExperiment_1.28.0    Biobase_2.58.0                
+[25] GenomicRanges_1.50.2           GenomeInfoDb_1.34.5           
+[27] IRanges_2.32.0                 S4Vectors_0.36.1              
+[29] BiocGenerics_0.44.0            MatrixGenerics_1.10.0         
+[31] matrixStats_0.63.0             forcats_0.5.2                 
+[33] stringr_1.5.0                  dplyr_1.0.10                  
+[35] purrr_1.0.0                    readr_2.1.3                   
+[37] tidyr_1.2.1                    tibble_3.1.8                  
+[39] ggplot2_3.4.0                  tidyverse_1.3.2               
+[41] openxlsx_4.2.5.1              
 
 loaded via a namespace (and not attached):
   [1] ragg_1.2.4                  bit64_4.0.5                
-  [3] knitr_1.41                  irlba_2.3.5.1              
-  [5] multcomp_1.4-20             DelayedArray_0.24.0        
+  [3] knitr_1.41                  multcomp_1.4-20            
+  [5] irlba_2.3.5.1               DelayedArray_0.24.0        
   [7] data.table_1.14.6           rpart_4.1.19               
   [9] RCurl_1.98-1.9              generics_0.1.3             
  [11] ScaledMatrix_1.6.0          cowplot_1.1.1              
@@ -3638,38 +3626,38 @@ loaded via a namespace (and not attached):
  [65] vipor_0.4.5                 nnet_7.3-18                
  [67] spatial_7.3-15              rlang_1.0.6                
  [69] lifecycle_1.0.3             sandwich_3.0-2             
- [71] mathjaxr_1.6-0              phyloseq_1.42.0            
- [73] modelr_0.1.10               rsvd_1.0.5                 
- [75] cellranger_1.1.0            Matrix_1.5-1               
- [77] carData_3.0-5               Rhdf5lib_1.20.0            
- [79] boot_1.3-28                 zoo_1.8-11                 
- [81] reprex_2.0.2                base64enc_0.1-3            
- [83] beeswarm_0.4.0              googlesheets4_1.0.1        
- [85] png_0.1-8                   viridisLite_0.4.1          
- [87] stabledist_0.7-1            rootSolve_1.8.2.3          
- [89] bitops_1.0-7                rhdf5filters_1.10.0        
- [91] blob_1.2.3                  DelayedMatrixStats_1.20.0  
- [93] decontam_1.18.0             jpeg_0.1-10                
- [95] rstatix_0.7.1               DECIPHER_2.26.0            
- [97] ggsignif_0.6.4              beachmat_2.14.0            
- [99] scales_1.2.1                memoise_2.0.1              
-[101] magrittr_2.0.3              plyr_1.8.8                 
-[103] zlibbioc_1.44.0             compiler_4.2.2             
-[105] RColorBrewer_1.1-3          plotrix_3.8-2              
-[107] clue_0.3-63                 lme4_1.1-31                
-[109] cli_3.5.0                   ade4_1.7-20                
-[111] lmerTest_3.1-3              htmlTable_2.4.1            
-[113] Formula_1.2-4               MASS_7.3-58.1              
-[115] mgcv_1.8-41                 tidyselect_1.2.0           
-[117] stringi_1.7.8               textshaping_0.3.6          
-[119] yaml_2.3.6                  BiocSingular_1.14.0        
-[121] latticeExtra_0.6-30         ggrepel_0.9.2              
-[123] grid_4.2.2                  sass_0.4.4                 
-[125] tools_4.2.2                 lmom_2.9                   
-[127] timechange_0.1.1            rstudioapi_0.14            
-[129] statip_0.2.3                foreign_0.8-83             
-[131] gridExtra_2.3               gld_2.6.6                  
-[133] farver_2.1.1                stable_1.1.6               
+ [71] mathjaxr_1.6-0              modelr_0.1.10              
+ [73] rsvd_1.0.5                  cellranger_1.1.0           
+ [75] Matrix_1.5-1                carData_3.0-5              
+ [77] zoo_1.8-11                  Rhdf5lib_1.20.0            
+ [79] boot_1.3-28                 reprex_2.0.2               
+ [81] base64enc_0.1-3             beeswarm_0.4.0             
+ [83] googlesheets4_1.0.1         png_0.1-8                  
+ [85] viridisLite_0.4.1           stabledist_0.7-1           
+ [87] rootSolve_1.8.2.3           bitops_1.0-7               
+ [89] rhdf5filters_1.10.0         blob_1.2.3                 
+ [91] DelayedMatrixStats_1.20.0   decontam_1.18.0            
+ [93] jpeg_0.1-10                 rstatix_0.7.1              
+ [95] DECIPHER_2.26.0             ggsignif_0.6.4             
+ [97] beachmat_2.14.0             scales_1.2.1               
+ [99] memoise_2.0.1               magrittr_2.0.3             
+[101] plyr_1.8.8                  zlibbioc_1.44.0            
+[103] compiler_4.2.2              RColorBrewer_1.1-3         
+[105] plotrix_3.8-2               clue_0.3-63                
+[107] lme4_1.1-31                 cli_3.5.0                  
+[109] ade4_1.7-20                 lmerTest_3.1-3             
+[111] htmlTable_2.4.1             Formula_1.2-4              
+[113] MASS_7.3-58.1               mgcv_1.8-41                
+[115] tidyselect_1.2.0            stringi_1.7.8              
+[117] textshaping_0.3.6           yaml_2.3.6                 
+[119] BiocSingular_1.14.0         latticeExtra_0.6-30        
+[121] ggrepel_0.9.2               grid_4.2.2                 
+[123] sass_0.4.4                  tools_4.2.2                
+[125] lmom_2.9                    timechange_0.1.1           
+[127] rstudioapi_0.14             statip_0.2.3               
+[129] foreign_0.8-83              gridExtra_2.3              
+[131] gld_2.6.6                   farver_2.1.1               
+[133] Rtsne_0.16                  stable_1.1.6               
 [135] digest_0.6.31               Rcpp_1.0.10                
 [137] car_3.1-1                   broom_1.0.2                
 [139] scuttle_1.8.3               httr_1.4.4                 

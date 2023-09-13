@@ -178,7 +178,7 @@ df_alpha$aridity = factor(df_alpha$aridity, levels = c("Arid", "Margin", "Hypera
 fig_violin = df_alpha %>%
   ggviolin(x = "aridity", y = "observed", fill = "aridity",
            add = c("jitter", "median_iqr")) + 
-  annotate("text", x = 3, y = 450, label = "p < 0.0001", 
+  annotate("text", x = 3, y = 450, label = "p = 0.0001", 
            size = 5, hjust = 1, vjust = 0) +
   labs(x = NULL, y = "Richness") +
   scale_fill_lancet(name = NULL) +
@@ -279,177 +279,8 @@ fig_heat_trend = df_fig %>%
   theme(plot.title = element_text(hjust = 0.5),
         axis.text.y = element_text(color = df_fig %>%
                                      distinct(genus, color) %>%
-                                     .$color))
-```
-
-# Run SECOM {.tabset}
-
-```{r}
-tse_arid = tse_species[, tse_species$aridity == "Arid"]
-tse_margin = tse_species[, tse_species$aridity == "Margin"]
-tse_hyperarid = tse_species[, tse_species$aridity == "Hyperarid"]
-
-set.seed(123)
-res_arid = secom_linear(data = list(tse_arid), assay_name = "counts",
-                        tax_level = "Genus", pseudo = 0, 
-                        prv_cut = 0.1, lib_cut = 1000, corr_cut = 0.5, 
-                        wins_quant = c(0.05, 0.95), method = "pearson", 
-                        soft = FALSE, thresh_len = 20, n_cv = 10, 
-                        thresh_hard = 0.3, max_p = 0.005, n_cl = 2)
-
-res_margin = secom_linear(data = list(tse_margin), assay_name = "counts",
-                          tax_level = "Genus", pseudo = 0, 
-                          prv_cut = 0.1, lib_cut = 1000, corr_cut = 0.5, 
-                          wins_quant = c(0.05, 0.95), method = "pearson", 
-                          soft = FALSE, thresh_len = 20, n_cv = 10, 
-                          thresh_hard = 0.3, max_p = 0.005, n_cl = 2)
-
-res_hyperarid = secom_linear(data = list(tse_hyperarid), assay_name = "counts",
-                             tax_level = "Genus", pseudo = 0,
-                             prv_cut = 0.1, lib_cut = 1000, corr_cut = 0.5,
-                             wins_quant = c(0.05, 0.95), method = "pearson", 
-                             soft = FALSE, thresh_len = 20, n_cv = 10, 
-                             thresh_hard = 0.3, max_p = 0.005, n_cl = 2)
-```
-
-## Data manipulation
-
-```{r}
-# Arid
-corr_arid = res_arid$corr_fl
-cooccur_arid = res_arid$mat_cooccur
-corr_arid[cooccur_arid < 10] = 0
-tax1 = colnames(corr_arid)
-
-# Margin
-corr_margin = res_margin$corr_fl
-cooccur_margin = res_margin$mat_cooccur
-corr_margin[cooccur_margin < 10] = 0
-tax2 = colnames(corr_margin)
-
-# Hyperarid
-corr_hyperarid = res_hyperarid$corr_fl
-cooccur_hyperarid = res_hyperarid$mat_cooccur
-corr_hyperarid[cooccur_hyperarid < 10] = 0
-tax3 = colnames(corr_hyperarid)
-
-commmon_tax = Reduce(intersect, list(tax1, tax2, tax3))
-idx1 = base::match(commmon_tax, tax1)
-idx2 = base::match(commmon_tax, tax2)
-idx3 = base::match(commmon_tax, tax3)
-corr_arid = corr_arid[idx1, idx1]
-corr_margin = corr_margin[idx2, idx2]
-corr_hyperarid = corr_hyperarid[idx3, idx3]
-
-common_genus = sapply(commmon_tax, function(x) strsplit(x, "_")[[1]][6])
-idx = (common_genus != "NA") & !grepl("^[[:digit:]]+", common_genus)
-ann_genus = common_genus[idx]
-corr_arid = corr_arid[idx, idx]
-corr_margin = corr_margin[idx, idx]
-corr_hyperarid = corr_hyperarid[idx, idx]
-
-colnames(corr_arid) = ann_genus; rownames(corr_arid) = ann_genus
-colnames(corr_margin) = ann_genus; rownames(corr_margin) = ann_genus
-colnames(corr_hyperarid) = ann_genus; rownames(corr_hyperarid) = ann_genus
-```
-
-## Arid
-
-```{r, fig.width=10, fig.height=8}
-df_arid = data.frame(get_upper_tri(corr_arid)) %>%
-  rownames_to_column("var1") %>%
-  pivot_longer(cols = -var1, names_to = "var2", values_to = "value") %>%
-  filter(!is.na(value)) %>%
-  mutate(value = round(value, 2))
-
-df_arid$var1 = factor(df_arid$var1, levels = ann_genus)
-df_arid$var2 = factor(df_arid$var2, levels = ann_genus)
-
-heat_arid = df_arid %>%
-  ggplot(aes(var2, var1, fill = value)) +
-  geom_tile(color = "black") +
-  scale_fill_gradient2(low = "blue", high = "red", mid = "white", na.value = "grey",
-                       midpoint = 0, limit = c(-1,1), space = "Lab", name = NULL) +
-  scale_x_discrete(drop = FALSE) +
-  scale_y_discrete(drop = FALSE) +
-  labs(x = NULL, y = NULL) +
-  geom_text(aes(var2, var1, label = value), color = "black", size = 3) +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1, 
-                                   face = "italic"),
-        axis.text.y = element_text(size = 10, face = "italic"),
-        strip.text.x = element_text(size = 14),
-        strip.text.y = element_text(size = 14),
-        legend.text = element_text(size = 12),
-        panel.grid.major = element_blank(),
-        axis.ticks = element_blank()) +
-  coord_fixed()
-```
-
-## Margin
-
-```{r, fig.width=10, fig.height=8}
-df_margin = data.frame(get_upper_tri(corr_margin)) %>%
-  rownames_to_column("var1") %>%
-  pivot_longer(cols = -var1, names_to = "var2", values_to = "value") %>%
-  filter(!is.na(value)) %>%
-  mutate(value = round(value, 2))
-
-df_margin$var1 = factor(df_margin$var1, levels = ann_genus)
-df_margin$var2 = factor(df_margin$var2, levels = ann_genus)
-
-heat_margin = df_margin %>%
-  ggplot(aes(var2, var1, fill = value)) +
-  geom_tile(color = "black") +
-  scale_fill_gradient2(low = "blue", high = "red", mid = "white", na.value = "grey",
-                       midpoint = 0, limit = c(-1,1), space = "Lab", name = NULL) +
-  scale_x_discrete(drop = FALSE) +
-  scale_y_discrete(drop = FALSE) +
-  labs(x = NULL, y = NULL) +
-  geom_text(aes(var2, var1, label = value), color = "black", size = 3) +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1, 
-                                   face = "italic"),
-        axis.text.y = element_text(size = 10, face = "italic"),
-        strip.text.x = element_text(size = 14),
-        strip.text.y = element_text(size = 14),
-        legend.text = element_text(size = 12),
-        panel.grid.major = element_blank(),
-        axis.ticks = element_blank()) +
-  coord_fixed()
-```
-
-## Hyperarid
-
-```{r, fig.width=10, fig.height=8}
-df_hyperarid = data.frame(get_upper_tri(corr_hyperarid)) %>%
-  rownames_to_column("var1") %>%
-  pivot_longer(cols = -var1, names_to = "var2", values_to = "value") %>%
-  filter(!is.na(value)) %>%
-  mutate(value = round(value, 2))
-
-df_hyperarid$var1 = factor(df_hyperarid$var1, levels = ann_genus)
-df_hyperarid$var2 = factor(df_hyperarid$var2, levels = ann_genus)
-
-heat_hyperarid = df_hyperarid %>%
-  ggplot(aes(var2, var1, fill = value)) +
-  geom_tile(color = "black") +
-  scale_fill_gradient2(low = "blue", high = "red", mid = "white", na.value = "grey",
-                       midpoint = 0, limit = c(-1,1), space = "Lab", name = NULL) +
-  scale_x_discrete(drop = FALSE) +
-  scale_y_discrete(drop = FALSE) +
-  labs(x = NULL, y = NULL) +
-  geom_text(aes(var2, var1, label = value), color = "black", size = 3) +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 10, hjust = 1, 
-                                   face = "italic"),
-        axis.text.y = element_text(size = 10, face = "italic"),
-        strip.text.x = element_text(size = 14),
-        strip.text.y = element_text(size = 14),
-        legend.text = element_text(size = 12),
-        panel.grid.major = element_blank(),
-        axis.ticks = element_blank()) +
-  coord_fixed()
+                                     .$color,
+                                   face = "italic"))
 ```
 
 # Outputs
@@ -466,26 +297,10 @@ write_csv(res_pair,
 
 write_csv(df_zero, "../results/outputs/qiita_10360_presence_absence.csv")
 
-# Main figures
 fig_main = ggarrange(fig_violin, fig_heat_trend, labels = c("a", "b"), legend = "bottom")
 
-ggsave(filename = "../results/figures/main_qiita_10360.jpeg", 
-       plot = fig_main, width = 10, height = 6, dpi = 100)
 ggsave(filename = "../results/figures/main_qiita_10360.pdf", 
-       plot = fig_main, width = 10, height = 6)
-
-# Supplementary figures
-leg = get_legend(heat_arid)
-heat_arid = heat_arid + theme(legend.position = "none")
-heat_margin = heat_margin + theme(legend.position = "none")
-heat_hyperarid = heat_hyperarid + theme(legend.position = "none")
-fig_supp = ggarrange(heat_arid, heat_margin, heat_hyperarid, leg, 
-                     ncol = 2, nrow = 2, 
-                     labels = c("a", "b", "c", ""))
-ggsave(filename = "../results/figures/supp_qiita_10360_corr.jpeg", 
-       plot = fig_supp, width = 16, height = 12, dpi = 100)
-ggsave(filename = "../results/figures/supp_qiita_10360_corr.pdf", 
-       plot = fig_supp, width = 16, height = 12)
+       plot = fig_main, width = 180, height = 120, units = "mm")
 ```
 
 # Session information

@@ -17,8 +17,6 @@ library(mia)
 library(ggpubr)
 library(doRNG)
 library(doParallel)
-library(magrittr)
-library(qwraps2)
 library(ANCOMBC)
 library(corncob)
 library(MicrobiomeStat)
@@ -34,16 +32,6 @@ logsumexp = function (x) {
 softmax = function (x) {
   exp(x - logsumexp(x))
 }
-
-options(qwraps2_markup = "markdown")
-summary_template =
-  list("Power" =
-         list("power_mean" = ~ round(mean(X1, na.rm = TRUE), 2),
-              "power_sd" = ~ round(sd(X1, na.rm = TRUE), 2)),
-       "FDR" = 
-         list("fdr_mean" = ~ round(mean(X2, na.rm = TRUE), 2),
-              "fdr_sd" = ~ round(sd(X2, na.rm = TRUE), 2))
-  )
 
 wb = createWorkbook()
 ```
@@ -635,36 +623,56 @@ fig_power_cont = df_fig %>%
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "Power", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.2, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
-  guides(color = guide_legend(title = NULL))
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        strip.text.x = element_text(size = 10))
 
 fig_fdr_cont = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "FDR", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.2, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
-  geom_hline(yintercept = 0.05, linetype = "dashed")
+  geom_hline(yintercept = 0.05, linetype = "dashed") +
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        strip.text.x = element_text(size = 10))
 
 fig_cont = ggarrange(fig_fdr_cont, fig_power_cont, 
                      ncol = 1, common.legend = TRUE)
 
 # Simulation summary
-df_tab = df_fig %>%
-  unite("setting", n:diff_prop, sep = ", ")
-df_tab$setting = factor(df_tab$setting, 
-                        levels = c(paste0("10, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("20, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("50, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("100, ", c(0.1, 0.2, 0.5, 0.9))))
+df_tab = df_fig
+df_tab$n = as.numeric(df_tab$n)
 
 tab = df_tab %>% 
-  group_by(method, setting) %>% 
-  summary_table(summary_template)
+  dplyr::transmute(method = method, n = n,
+                   power = ifelse(X1 == 0, 1e-5, X1),
+                   fdr = case_when(
+                     X2 == 0 ~ 1e-5, 
+                     is.na(X2) ~ 0,
+                     TRUE ~ X2
+                   ),
+                   fap = log(power/fdr)) %>%
+  group_by(method, n) %>% 
+  summarise(power_mean = round(mean(power, na.rm = TRUE), 2),
+            power_sd = round(sd(power, na.rm = TRUE), 2),
+            fdr_mean = round(mean(fdr, na.rm = TRUE), 2),
+            fdr_sd = round(sd(fdr, na.rm = TRUE), 2),
+            fap_mean = round(mean(fap, na.rm = TRUE), 2),
+            fap_sd = round(sd(fdr, na.rm = TRUE), 2)) %>%
+  arrange(n, method) %>%
+  mutate(power = paste0(power_mean, " (", power_sd, ")"),
+         fdr = paste0(fdr_mean, " (", fdr_sd, ")"),
+         fap = paste0(fap_mean, " (", fap_sd, ")")) %>%
+  dplyr::select(method, n, power, fdr, fap)
 
 addWorksheet(wb, "cont")
 writeData(wb, "cont", tab)
@@ -1261,36 +1269,56 @@ fig_power_bin = df_fig %>%
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "Power", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.2, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
-  guides(color = guide_legend(title = NULL))
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        strip.text.x = element_text(size = 10))
 
 fig_fdr_bin = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "FDR", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.2, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
-  geom_hline(yintercept = 0.05, linetype = "dashed")
+  geom_hline(yintercept = 0.05, linetype = "dashed") +
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        strip.text.x = element_text(size = 10))
 
 fig_bin = ggarrange(fig_fdr_bin, fig_power_bin, 
                     ncol = 1, common.legend = TRUE)
 
 # Simulation summary
-df_tab = df_fig %>%
-  unite("setting", n:diff_prop, sep = ", ")
-df_tab$setting = factor(df_tab$setting, 
-                        levels = c(paste0("20, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("40, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("60, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("100, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("200, ", c(0.1, 0.2, 0.5, 0.9))))
+df_tab = df_fig
+df_tab$n = as.numeric(df_tab$n)
 
 tab = df_tab %>% 
-  group_by(method, setting) %>% 
-  summary_table(summary_template)
+  dplyr::transmute(method = method, n = n,
+                   power = ifelse(X1 == 0, 1e-5, X1),
+                   fdr = case_when(
+                     X2 == 0 ~ 1e-5, 
+                     is.na(X2) ~ 0,
+                     TRUE ~ X2
+                   ),
+                   fap = log(power/fdr)) %>%
+  group_by(method, n) %>% 
+  summarise(power_mean = round(mean(power, na.rm = TRUE), 2),
+            power_sd = round(sd(power, na.rm = TRUE), 2),
+            fdr_mean = round(mean(fdr, na.rm = TRUE), 2),
+            fdr_sd = round(sd(fdr, na.rm = TRUE), 2),
+            fap_mean = round(mean(fap, na.rm = TRUE), 2),
+            fap_sd = round(sd(fdr, na.rm = TRUE), 2)) %>%
+  arrange(n, method) %>%
+  mutate(power = paste0(power_mean, " (", power_sd, ")"),
+         fdr = paste0(fdr_mean, " (", fdr_sd, ")"),
+         fap = paste0(fap_mean, " (", fap_sd, ")")) %>%
+  dplyr::select(method, n, power, fdr, fap)
 
 addWorksheet(wb, "bin")
 writeData(wb, "bin", tab)
@@ -1825,37 +1853,57 @@ fig_power_dunn = df_fig %>%
   ggline(x = "n", y = "X1", add = "mean_se",
          color = "method", xlab = "Sample Size", ylab = "Power", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.2, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_color_manual(values = c("#E64B35FF", "#4DBBD5FF", "#00A087FF", "#F39B7FFF")) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
-  guides(color = guide_legend(title = NULL))
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(size = 8))
 
 fig_fdr_dunn = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", xlab = "Sample Size", ylab = "mdFDR", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.2, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_color_manual(values = c("#E64B35FF", "#4DBBD5FF", "#00A087FF", "#F39B7FFF")) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
-  geom_hline(yintercept = 0.05, linetype = "dashed")
+  geom_hline(yintercept = 0.05, linetype = "dashed") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(size = 8))
 
 fig_dunn = ggarrange(fig_fdr_dunn, fig_power_dunn, 
                      ncol = 1, common.legend = TRUE)
 
 # Simulation summary
-df_tab = df_fig %>%
-  unite("setting", n:diff_prop, sep = ", ")
-df_tab$setting = factor(df_tab$setting, 
-                        levels = c(paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("60, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("90, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("150, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("300, ", c(0.1, 0.2, 0.5, 0.9))))
+df_tab = df_fig
+df_tab$n = as.numeric(df_tab$n)
 
 tab = df_tab %>% 
-  group_by(method, setting) %>% 
-  summary_table(summary_template)
+  dplyr::transmute(method = method, n = n,
+                   power = ifelse(X1 == 0, 1e-5, X1),
+                   fdr = case_when(
+                     X2 == 0 ~ 1e-5, 
+                     is.na(X2) ~ 0,
+                     TRUE ~ X2
+                   ),
+                   fap = log(power/fdr)) %>%
+  group_by(method, n) %>% 
+  summarise(power_mean = round(mean(power, na.rm = TRUE), 2),
+            power_sd = round(sd(power, na.rm = TRUE), 2),
+            fdr_mean = round(mean(fdr, na.rm = TRUE), 2),
+            fdr_sd = round(sd(fdr, na.rm = TRUE), 2),
+            fap_mean = round(mean(fap, na.rm = TRUE), 2),
+            fap_sd = round(sd(fdr, na.rm = TRUE), 2)) %>%
+  arrange(n, method) %>%
+  mutate(power = paste0(power_mean, " (", power_sd, ")"),
+         fdr = paste0(fdr_mean, " (", fdr_sd, ")"),
+         fap = paste0(fap_mean, " (", fap_sd, ")")) %>%
+  dplyr::select(method, n, power, fdr, fap)
 
 addWorksheet(wb, "dunn")
 writeData(wb, "dunn", tab)
@@ -2151,36 +2199,57 @@ fig_power_pair = df_fig %>%
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "Power", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.4, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
-  guides(color = guide_legend(title = NULL))
+  scale_y_continuous(limits = c(0.6, 1.1), breaks = seq(0.6, 1, 0.2)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(size = 8))
 
 fig_fdr_pair = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "mdFDR", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.4, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
-  geom_hline(yintercept = 0.05, linetype = "dashed")
+  geom_hline(yintercept = 0.05, linetype = "dashed") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(size = 8))
 
 fig_pair = ggarrange(fig_fdr_pair, fig_power_pair, 
                      ncol = 1, common.legend = TRUE)
 
 # Simulation summary
-df_tab = df_fig %>%
-  unite("setting", n:diff_prop, sep = ", ")
-df_tab$setting = factor(df_tab$setting, 
-                        levels = c(paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("60, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("90, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("150, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("300, ", c(0.1, 0.2, 0.5, 0.9))))
+df_tab = df_fig
+df_tab$n = as.numeric(df_tab$n)
 
 tab = df_tab %>% 
-  group_by(method, setting) %>% 
-  summary_table(summary_template)
+  dplyr::transmute(method = method, n = n,
+                   power = ifelse(X1 == 0, 1e-5, X1),
+                   fdr = case_when(
+                     X2 == 0 ~ 1e-5, 
+                     is.na(X2) ~ 0,
+                     TRUE ~ X2
+                   ),
+                   fap = log(power/fdr)) %>%
+  group_by(method, n) %>% 
+  summarise(power_mean = round(mean(power, na.rm = TRUE), 2),
+            power_sd = round(sd(power, na.rm = TRUE), 2),
+            fdr_mean = round(mean(fdr, na.rm = TRUE), 2),
+            fdr_sd = round(sd(fdr, na.rm = TRUE), 2),
+            fap_mean = round(mean(fap, na.rm = TRUE), 2),
+            fap_sd = round(sd(fdr, na.rm = TRUE), 2)) %>%
+  arrange(n, method) %>%
+  mutate(power = paste0(power_mean, " (", power_sd, ")"),
+         fdr = paste0(fdr_mean, " (", fdr_sd, ")"),
+         fap = paste0(fap_mean, " (", fap_sd, ")")) %>%
+  dplyr::select(method, n, power, fdr, fap)
 
 addWorksheet(wb, "pair")
 writeData(wb, "pair", tab)
@@ -2367,40 +2436,61 @@ df_fig$method = factor(df_fig$method,
                                   "ANCOM-BC2 (SS Filter)"))
 
 fig_power_trend = df_fig %>%
-  ggline(x = "n", y = "X1", add = "mean_se",
+  ggline(x = "n", y = "X1", add = c("mean_se"),
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "Power", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.4, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
-  guides(color = guide_legend(title = NULL))
+  scale_y_continuous(limits = c(0.4, 1.1), breaks = seq(0.4, 1, 0.2)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(size = 8))
 
 fig_fdr_trend = df_fig %>%
   ggline(x = "n", y = "X2", add = "mean_se",
          color = "method", palette = "npg",
          xlab = "Sample Size", ylab = "FDR", 
          facet.by = "diff_prop", nrow = 1,
-         size = 0.4, point.size = 0.1) +
+         size = 0.2, shape = 20) +
   scale_x_discrete(labels = c(10, 20, 30, 50, 100)) +
   guides(color = guide_legend(title = NULL)) +
-  geom_hline(yintercept = 0.05, linetype = "dashed")
+  geom_hline(yintercept = 0.05, linetype = "dashed") +
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(size = 8))
 
 fig_trend = ggarrange(fig_fdr_trend, fig_power_trend, 
                       ncol = 1, common.legend = TRUE)
 
 # Simulation summary
-df_tab = df_fig %>%
-  unite("setting", n:diff_prop, sep = ", ")
-df_tab$setting = factor(df_tab$setting, 
-                        levels = c(paste0("30, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("60, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("90, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("150, ", c(0.1, 0.2, 0.5, 0.9)),
-                                   paste0("300, ", c(0.1, 0.2, 0.5, 0.9))))
+df_tab = df_fig
+df_tab$n = as.numeric(df_tab$n)
 
 tab = df_tab %>% 
-  group_by(method, setting) %>% 
-  summary_table(summary_template)
+  dplyr::transmute(method = method, n = n,
+                   power = ifelse(X1 == 0, 1e-5, X1),
+                   fdr = case_when(
+                     X2 == 0 ~ 1e-5, 
+                     is.na(X2) ~ 0,
+                     TRUE ~ X2
+                   ),
+                   fap = log(power/fdr)) %>%
+  group_by(method, n) %>% 
+  summarise(power_mean = round(mean(power, na.rm = TRUE), 2),
+            power_sd = round(sd(power, na.rm = TRUE), 2),
+            fdr_mean = round(mean(fdr, na.rm = TRUE), 2),
+            fdr_sd = round(sd(fdr, na.rm = TRUE), 2),
+            fap_mean = round(mean(fap, na.rm = TRUE), 2),
+            fap_sd = round(sd(fdr, na.rm = TRUE), 2)) %>%
+  arrange(n, method) %>%
+  mutate(power = paste0(power_mean, " (", power_sd, ")"),
+         fdr = paste0(fdr_mean, " (", fdr_sd, ")"),
+         fap = paste0(fap_mean, " (", fap_sd, ")")) %>%
+  dplyr::select(method, n, power, fdr, fap)
 
 addWorksheet(wb, "trend")
 writeData(wb, "trend", tab)
@@ -2414,21 +2504,19 @@ saveWorkbook(wb, file = "../results/outputs/qmp_sim_summ_fixed.xlsx", overwrite 
 fig1 = ggarrange(fig_fdr_cont, fig_power_cont, 
                  fig_fdr_bin, fig_power_bin,
                  ncol = 1, labels = c("a", "", "b", ""), 
+                 font.label = list(size = 12),
                  common.legend = TRUE, legend = "bottom")
-ggsave(filename = "../results/figures/supp_qmp_sim_fixed1.jpeg", 
-       plot = fig1, width = 12, height = 12, dpi = 100)
-ggsave(filename = "../results/figures/supp_qmp_sim_fixed1.pdf", 
-       plot = fig1, width = 12, height = 12)
+ggsave(filename = "../results/figures/extend_qmp_sim_fixed1.jpeg", 
+       plot = fig1, width = 180, height = 180, units = "mm", dpi = 300)
 
 fig2 = ggarrange(fig_fdr_dunn, fig_power_dunn, 
                  fig_fdr_pair, fig_power_pair, 
                  fig_fdr_trend, fig_power_trend,
                  ncol = 1, labels = c("a", "", "b", "", "c", ""),
+                 font.label = list(size = 10),
                  common.legend = TRUE, legend = "bottom")
-ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.jpeg",
-       plot = fig2, width = 12, height = 14, dpi = 100)
-ggsave(filename = "../results/figures/supp_qmp_sim_fixed2.pdf",
-       plot = fig2, width = 12, height = 14)
+ggsave(filename = "../results/figures/extend_qmp_sim_fixed2.jpeg",
+       plot = fig2, width = 180, height = 210, units = "mm", dpi = 300)
 ```
 
 # Session information

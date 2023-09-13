@@ -14,6 +14,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE,
 library(openxlsx)
 library(tidyverse)
 library(mia)
+library(microbiome)
 library(ggpubr)
 library(doRNG)
 library(doParallel)
@@ -99,69 +100,23 @@ fig_batch = ggarrange(fig1, fig2, fig3, labels = c("a", "b", "c"), ncol = 3)
 
 # Computing time
 
-1 continuous exposure + 1 binary confounder
+```{r}
+data(atlas1006, package = "microbiome")
+pseq = subset_samples(atlas1006, time == 0)
+pseq = subset_samples(pseq, bmi_group %in% c("lean", "obese"))
+tse = mia::makeTreeSummarizedExperimentFromPhyloseq(pseq)
+
+pseq
+```
 
 ```{r, eval=FALSE}
-# Simulation settings
-data(throat.otu.table, package = "LOCOM")
-# Use the URT data as the template to obtain mean vector and variance-covariance
-# matrix. Discard OTUs that have less than 5% of prevalence across samples
-prevalence = apply(t(throat.otu.table), 1, function(x)
-  sum(x != 0, na.rm = TRUE)/length(x[!is.na(x)]))
-tax_keep = which(prevalence >= 0.05)
-
-set.seed(12345)
-n = 30
-d = length(tax_keep)
-diff_prop = 0.1
-lfc_value = c(-2, -1, 1, 2)
-
-# Generate the true abundances
-abn_data = sim_plnm(abn_table = throat.otu.table, taxa_are_rows = FALSE, 
-                    prv_cut = 0.05, n = n, lib_mean = 1e8, disp = 0.5)
-log_abn_data = log(abn_data + 1e-5)
-rownames(log_abn_data) = paste0("T", seq_len(d))
-colnames(log_abn_data) = paste0("S", seq_len(n))
-
-# Generate the sample and feature meta data
-# Sampling fractions are set to differ by the variable of interest
-smd = data.frame(sample = paste0("S", seq_len(n)),
-                 cont_cov = rnorm(n),
-                 bin_cov = as.factor(rep(seq_len(2), each = n/2))) %>%
-  dplyr::mutate(samp_frac = log(softmax(cont_cov)/10))
-lfc_cont = sample(c(0, lfc_value), size = d, replace = TRUE,
-                  prob = c(1 - diff_prop, 
-                           rep(diff_prop/length(lfc_value), length(lfc_value)))) 
-lfc_bin = sample(c(0, 1), size = d, replace = TRUE,
-                 prob = c(1 - diff_prop, diff_prop))
-
-fmd = data.frame(taxon = paste0("T", seq_len(d)),
-                     seq_eff = log(runif(d, min = 0.1, max = 1)),
-                     lfc_cont = lfc_cont,
-                     lfc_bin = lfc_bin)
-    
-# Add effect sizes of covariates to the true abundances
-smd_dmy = model.matrix(~ 0 + cont_cov + bin_cov, data = smd)
-log_abn_data = log_abn_data + outer(fmd$lfc_cont, smd_dmy[, "cont_cov"] )
-log_abn_data = log_abn_data + outer(fmd$lfc_bin, smd_dmy[, "bin_cov2"])
-
-# Add sample- and taxon-specific biases
-log_otu_data = t(t(log_abn_data) + smd$samp_frac)
-log_otu_data = log_otu_data + fmd$seq_eff
-otu_data = round(exp(log_otu_data))
-
-# Create the tse object
-assays = S4Vectors::SimpleList(counts = otu_data)
-smd = S4Vectors::DataFrame(smd)
-tse = TreeSummarizedExperiment::TreeSummarizedExperiment(assays = assays, colData = smd)
-
-# ANCOM-BC2
-t1_ancombc2 = Sys.time()
+# ANCOM-BC2 (No Filter)
+t1_ancombc2_no = Sys.time()
 output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
-                  fix_formula = "cont_cov + bin_cov", rand_formula = NULL,
-                  p_adj_method = "holm", 
+                  fix_formula = "age + bmi_group", rand_formula = NULL,
+                  p_adj_method = "holm", pseudo_sens = FALSE,
                   prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
-                  group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE,
+                  group = "bmi_group", struc_zero = FALSE, neg_lb = FALSE,
                   alpha = 0.05, n_cl = 1, verbose = FALSE,
                   global = FALSE, pairwise = FALSE, 
                   dunnet = FALSE, trend = FALSE,
@@ -170,39 +125,45 @@ output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
                   em_control = list(tol = 1e-5, max_iter = 100),
                   lme_control = NULL, mdfdr_control = NULL, 
                   trend_control = NULL)
-t2_ancombc2 = Sys.time()
-t_ancombc2 = t2_ancombc2 - t1_ancombc2
+t2_ancombc2_no = Sys.time()
+t_ancombc2_no = t2_ancombc2_no - t1_ancombc2_no
+
+# ANCOM-BC2 (SS Filter)
+t1_ancombc2_ss = Sys.time()
+output = ancombc2(data = tse, assay_name = "counts", tax_level = NULL,
+                  fix_formula = "age + bmi_group", rand_formula = NULL,
+                  p_adj_method = "holm", pseudo_sens = TRUE,
+                  prv_cut = 0.10, lib_cut = 1000, s0_perc = 0.05,
+                  group = "bmi_group", struc_zero = FALSE, neg_lb = FALSE,
+                  alpha = 0.05, n_cl = 1, verbose = FALSE,
+                  global = FALSE, pairwise = FALSE, 
+                  dunnet = FALSE, trend = FALSE,
+                  iter_control = list(tol = 1e-5, max_iter = 20, 
+                                      verbose = FALSE),
+                  em_control = list(tol = 1e-5, max_iter = 100),
+                  lme_control = NULL, mdfdr_control = NULL, 
+                  trend_control = NULL)
+t2_ancombc2_ss = Sys.time()
+t_ancombc2_ss = t2_ancombc2_ss - t1_ancombc2_ss
 
 # ANCOM-BC
 t1_ancombc = Sys.time()
 output = ancombc(data = tse, assay_name = "counts", 
                  tax_level = NULL, phyloseq = NULL, 
-                 formula = "cont_cov + bin_cov", 
+                 formula = "age + bmi_group", 
                  p_adj_method = "holm", prv_cut = 0.10, lib_cut = 1000, 
-                 group = "bin_cov", struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
+                 group = "bmi_group", struc_zero = FALSE, neg_lb = FALSE, tol = 1e-5, 
                  max_iter = 100, conserve = TRUE, alpha = 0.05, global = FALSE,
                  n_cl = 1, verbose = FALSE)
 t2_ancombc = Sys.time()
 t_ancombc = t2_ancombc - t1_ancombc
 
 # CORNCOB
-# Remove samples with low library sizes
-idx = which(colSums(otu_data) > 1000)
-otu_data = otu_data[, idx]
-smd = smd[idx, ]
-
-# Crease the phyloseq object
-OTU = otu_table(otu_data, taxa_are_rows = TRUE)
-META = sample_data(as.data.frame(smd))
-sample_names(META) = smd$sample
-pseq = phyloseq(OTU, META)
-
-# Run corncob
 t1_corncob = Sys.time()
-output = differentialTest(formula = ~ cont_cov + bin_cov,
-                          phi.formula = ~ cont_cov + bin_cov,
-                          formula_null = ~ bin_cov,
-                          phi.formula_null = ~ cont_cov + bin_cov,
+output = differentialTest(formula = ~ age + bmi_group,
+                          phi.formula = ~ age + bmi_group,
+                          formula_null = ~ age,
+                          phi.formula_null = ~ age + bmi_group,
                           test = "Wald", boot = FALSE,
                           data = pseq,
                           fdr = "holm",
@@ -211,6 +172,8 @@ t2_corncob = Sys.time()
 t_corncob = t2_corncob - t1_corncob
 
 # LinDA
+otu_data = abundances(pseq)
+smd = meta(pseq)
 # Remove samples with low library sizes
 idx = which(colSums(otu_data) > 1000)
 otu_data = otu_data[, idx]
@@ -218,7 +181,7 @@ smd = smd[idx, ]
 
 t1_linda = Sys.time()
 output = linda(feature.dat = otu_data, meta.dat = smd,
-               formula = "~ cont_cov + bin_cov",
+               formula = "~ age + bmi_group",
                alpha = 0.05, 
                prev.filter = 0.10, 
                mean.abund.filter = 0,
@@ -237,8 +200,8 @@ otu_data = otu_data[, idx]
 smd = smd[idx, ]
 
 otu_table = data.matrix(t(otu_data))
-Y = smd$cont_cov
-C = data.matrix(model.matrix(Y ~ smd$bin_cov - 1))[, -1]
+Y = ifelse(smd$bmi_group == "lean", 0, 1)
+C = smd$age
 
 t1_locom = Sys.time()
 output = locom(otu.table = otu_table, 
@@ -252,8 +215,10 @@ output = locom(otu.table = otu_table,
 t2_locom = Sys.time()
 t_locom = t2_locom - t1_locom
 
-df_t = data.frame(method = c("ANCOM-BC2", "ANCOM-BC", "CORNCOB", "LinDA", "LOCOM"),
-                  time = c(t_ancombc2, t_ancombc, t_corncob, t_linda, t_locom)) %>%
+df_t = data.frame(method = c("ANCOM-BC2 (No Filter)", "ANCOM-BC2 (SS Filter)", 
+                             "ANCOM-BC", "CORNCOB", "LinDA", "LOCOM"),
+                  time = c(t_ancombc2_no, t_ancombc2_ss, t_ancombc, 
+                           t_corncob, t_linda, t_locom)) %>%
   mutate(time = round(time, 2))
 saveRDS(df_t, file = "../data/others/df_t.RDS")
 ```
@@ -375,11 +340,14 @@ df_fig$method = factor(df_fig$method,
                                   "ANCOM-BC", "CORNCOB", "LinDA", "LOCOM"))
 
 fig_fap_cont = df_fig %>%
-  ggscatter(x = "power", y = "fap", 
+  ggscatter(x = "power", y = "fap", size = 0.5,  
             color = "method", palette = "npg",
             xlab = "Power", ylab = "FAP", 
-            add = "reg.line", conf.int = FALSE) +
-  guides(color = guide_legend(title = NULL))
+            add = "reg.line", conf.int = FALSE, add.params = list(size = 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
 
 fig_cdf_cont1 = df_fig %>%
   filter(power >= 0.5) %>%
@@ -387,7 +355,10 @@ fig_cdf_cont1 = df_fig %>%
          xlab = "FAP", ylab = "CDF", 
          main = expression(Power >= 0.5)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_cont2 = df_fig %>%
   filter(power >= 0.8) %>%
@@ -395,7 +366,10 @@ fig_cdf_cont2 = df_fig %>%
          xlab = "FAP", ylab = "CDF", 
          main = expression(Power >= 0.8)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_cont3 = df_fig %>%
   filter(power >= 0.9) %>%
@@ -403,7 +377,10 @@ fig_cdf_cont3 = df_fig %>%
          xlab = "FAP", ylab = "CDF", 
          main = expression(Power >= 0.9)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
 ```
 
 ## Binary exposure
@@ -514,11 +491,14 @@ df_fig$method = factor(df_fig$method,
                                   "ANCOM-BC", "CORNCOB", "LinDA", "LOCOM"))
 
 fig_fap_bin = df_fig %>%
-  ggscatter(x = "power", y = "fap", 
+  ggscatter(x = "power", y = "fap", size = 0.5, 
             color = "method", palette = "npg",
             xlab = "Power", ylab = "FAP", 
-            add = "reg.line", conf.int = FALSE) +
-  guides(color = guide_legend(title = NULL))
+            add = "reg.line", conf.int = FALSE, add.params = list(size = 0.5)) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
 
 fig_cdf_bin1 = df_fig %>%
   filter(power >= 0.5) %>%
@@ -526,7 +506,10 @@ fig_cdf_bin1 = df_fig %>%
          xlab = "FAP", ylab = "CDF", 
          main = expression(Power >= 0.5)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_bin2 = df_fig %>%
   filter(power >= 0.8) %>%
@@ -534,7 +517,10 @@ fig_cdf_bin2 = df_fig %>%
          xlab = "FAP", ylab = "CDF", 
          main = expression(Power >= 0.8)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
   
 fig_cdf_bin3 = df_fig %>%
   filter(power >= 0.9) %>%
@@ -542,28 +528,27 @@ fig_cdf_bin3 = df_fig %>%
          xlab = "FAP", ylab = "CDF", 
          main = expression(Power >= 0.9)) +
   guides(color = guide_legend(title = NULL)) +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(size = 8, hjust = 0.5),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        legend.text = element_text(size = 8))
 ```
 
 # Outputs
 
 ```{r}
-ggsave(filename = "../results/figures/supp_sim_batch_effects.jpeg", 
-       plot = fig_batch, width = 8, height = 5, dpi = 100)
-ggsave(filename = "../results/figures/supp_sim_batch_effects.pdf", 
-       plot = fig_batch, width = 8, height = 5)
+ggsave(filename = "../results/figures/extend_sim_batch_effects.jpeg", 
+       plot = fig_batch, width = 180, height = 120, units = "mm", dpi = 300)
 
 fig_fap = ggarrange(fig_fap_cont, fig_cdf_cont1, fig_cdf_cont2, fig_cdf_cont3,
                     fig_fap_bin, fig_cdf_bin1, fig_cdf_bin2, fig_cdf_bin3,
-                    widths = c(2, 1, 1, 1), 
+                    widths = c(2, 1, 1, 1), font.label = list(size = 8),
                     nrow = 2, ncol = 4, labels = c("a", "", "", "",
                                                    "b", "", "", ""),
                     common.legend = TRUE, legend = "bottom")
 
-ggsave(filename = "../results/figures/supp_sim_fap.jpeg", 
-       plot = fig_fap, width = 14, height = 8, dpi = 100)
-ggsave(filename = "../results/figures/supp_sim_fap.pdf", 
-       plot = fig_fap, width = 14, height = 8)
+ggsave(filename = "../results/figures/extend_sim_fap.jpeg", 
+       plot = fig_fap, width = 180, height = 100, units = "mm", dpi = 300)
 ```
 
 # Session information

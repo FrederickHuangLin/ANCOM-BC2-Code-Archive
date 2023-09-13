@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SBATCH --partition=norm # Job to run on partition 'partname'. (default: 'norm')
+#SBATCH --partition=norm # Job to run on partition 'partname'. (default: 'norm')
 #SBATCH --ntasks=1 # Number of task to be run
 #SBATCH --cpus-per-task=12 # Number of CPUs required for each task
 #SBATCH --mem=200g # Memory required for the job. 
